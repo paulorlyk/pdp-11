@@ -16,7 +16,7 @@ static struct
     cpu_word PSW;
 } cpu;
 
-enum opcode_
+enum _opcode
 {
     _mov        = 0x1000,   // MOV      Move
     _movb       = 0x9000,   // MOVB     Move
@@ -132,7 +132,7 @@ enum opcode_
     // 170005   MPP      Maintenance Partial Product
 };
 
-enum addressingMode_
+enum _addressingMode
 {
     _reg               = 0, // The operand is in Rn
     _reg_deferred      = 1, // Rn contains the address of the operand
@@ -144,48 +144,58 @@ enum addressingMode_
     _index_deferred    = 7  // Rn + X is the address of the address of the operand
 };
 
-struct instruction_
+struct _instruction
 {
-    enum opcode_ opcode;
-    enum addressingMode_ srcMode;
+    enum _opcode opcode;
+    enum _addressingMode srcMode;
     int src;
-    enum addressingMode_ dstMode;
+    enum _addressingMode dstMode;
     int dst;
     int reg;
     int8_t offset;
 };
 
-static cpu_word signExtend_(cpu_word w, bool byte)
+static cpu_word _signExtend(cpu_word w, bool byte)
 {
-    return byte ? (w & 0x00FF | ((w & 0x8000) ? ~0xFF : 0)) : w;
+    return byte ? (w & 0x00FF | ((w & 0x0080) ? ~0xFF : 0)) : w;
 }
 
-static cpu_word read_(cpu_addr addr, bool byte)
+static cpu_word _read(cpu_addr addr, bool byte)
 {
-    cpu_word data = mem_read_physical(addr);
+    cpu_word data = 0;
+
+    if(!mem_read_physical(addr, &data))
+    {
+        // TODO: Trap
+        assert(false);
+    }
 
     if(byte)
-        data = data >> (8 * (addr & 1U)) & ~0xFF;
+        data = data >> (8 * (addr & 1U)) & 0xFF;
 
-    return signExtend_(data, byte);
+    return _signExtend(data, byte);
 }
 
-static void write_(cpu_addr addr, bool byte, cpu_word data)
+static void _write(cpu_addr addr, bool byte, cpu_word data)
 {
 //    if(byte)
 //        data &= 0xFF;
 
-    mem_write_physical(addr, byte, data);
+    if(!mem_write_physical(addr, byte, data))
+    {
+        // TODO: Trap
+        assert(false);
+    }
 }
 
-static cpu_word fetchPC_(void)
+static cpu_word _fetchPC(void)
 {
-    cpu_word res = read_(cpu.GPR[7], false);
+    cpu_word res = _read(cpu.GPR[7], false);
     cpu.GPR[7] += 2;
     return res;
 }
 
-static void decode_(cpu_word inst, struct instruction_* pInst)
+static void _decode(cpu_word inst, struct _instruction* pInst)
 {
     // TODO: Debug
     pInst->opcode = 0xFFFFFF;
@@ -339,7 +349,7 @@ static void decode_(cpu_word inst, struct instruction_* pInst)
     }
 }
 
-static bool calculateOperandAddress_(enum addressingMode_ mode, int reg, bool byte, cpu_addr *pAddr)
+static bool _calculateOperandAddress(enum _addressingMode mode, int reg, bool byte, cpu_addr *pAddr)
 {
     assert(mode >= _reg && mode <= _index_deferred);
     assert(reg >= 0 && reg < 8);
@@ -363,7 +373,7 @@ static bool calculateOperandAddress_(enum addressingMode_ mode, int reg, bool by
             break;
 
         case _auto_inc_deferred:
-            *pAddr = read_(*pRn, false);
+            *pAddr = _read(*pRn, false);
             *pRn += 2;
             break;
 
@@ -374,14 +384,14 @@ static bool calculateOperandAddress_(enum addressingMode_ mode, int reg, bool by
 
         case _auto_dec_deferred:
             *pRn -= 1 + !byte;
-            *pAddr = read_(*pRn, false);
+            *pAddr = _read(*pRn, false);
             break;
 
         case _index:
         {
             // Make sure that index was fetched before reading register value
             // This is important in case if register itself is PC
-            cpu_word X = fetchPC_();
+            cpu_word X = _fetchPC();
             *pAddr = *pRn + X;
             break;
         }
@@ -390,8 +400,8 @@ static bool calculateOperandAddress_(enum addressingMode_ mode, int reg, bool by
         {
             // Make sure that index was fetched before reading register value
             // This is important in case if register itself is PC
-            cpu_word X = fetchPC_();
-            *pAddr = read_(*pRn + X, false);
+            cpu_word X = _fetchPC();
+            *pAddr = _read(*pRn + X, false);
             break;
         }
     }
@@ -399,15 +409,15 @@ static bool calculateOperandAddress_(enum addressingMode_ mode, int reg, bool by
     return true;
 }
 
-static cpu_word fetchOperand_(enum addressingMode_ mode, int reg, bool byte, cpu_addr *pAddr)
+static cpu_word fetchOperand_(enum _addressingMode mode, int reg, bool byte, cpu_addr *pAddr)
 {
-    if(calculateOperandAddress_(mode, reg, byte, pAddr))
-        return read_(*pAddr, byte);
+    if(_calculateOperandAddress(mode, reg, byte, pAddr))
+        return _read(*pAddr, byte);
 
-    return signExtend_(cpu.GPR[reg], byte);
+    return _signExtend(cpu.GPR[reg], byte);
 }
 
-static void storeDestResult_(enum addressingMode_ mode, int reg, bool byte, cpu_addr addr, cpu_word data)
+static void _storeDestResult(enum _addressingMode mode, int reg, bool byte, cpu_addr addr, cpu_word data)
 {
     assert(mode >= _reg && mode <= _index_deferred);
     assert(reg >= 0 && reg < 8);
@@ -415,10 +425,10 @@ static void storeDestResult_(enum addressingMode_ mode, int reg, bool byte, cpu_
     if(mode == _reg)
         cpu.GPR[reg] = data;
     else
-        write_(addr, byte, data);
+        _write(addr, byte, data);
 }
 
-static void setFlags_(bool n, bool z, bool v, bool c)
+static void _setFlags(bool n, bool z, bool v, bool c)
 {
     cpu.PSW = (cpu.PSW & ~0x000F) | (n << 3) | (z << 2) | (v << 1) | (c << 0);
 }
@@ -432,11 +442,11 @@ void cpu_init(cpu_word R7)
 
 void cpu_run(void)
 {
-    cpu_word instWord = fetchPC_();
+    cpu_word instWord = _fetchPC();
     DEBUG("Instruction: 0%06o", instWord);
 
-    struct instruction_ inst = {0};
-    decode_(instWord, &inst);
+    struct _instruction inst = {0};
+    _decode(instWord, &inst);
 
     // TODO: 3 word instruction
     if((inst.srcMode == _index || inst.srcMode == _index_deferred) && (inst.dstMode == _index || inst.dstMode == _index_deferred))
@@ -474,9 +484,9 @@ void cpu_run(void)
         {
             DEBUG("MOV / MOVB");
             operand1 = fetchOperand_(inst.srcMode, inst.src, byteFlag, &operand1Addr);
-            calculateOperandAddress_(inst.dstMode, inst.dst, byteFlag, &operand2Addr);
-            storeDestResult_(inst.dstMode, inst.dst, byteFlag, operand2Addr, operand1);
-            setFlags_(operand1 & 0x8000, operand1 == 0, 0, PSW_GET_C(cpu.PSW));
+            _calculateOperandAddress(inst.dstMode, inst.dst, byteFlag, &operand2Addr);
+            _storeDestResult(inst.dstMode, inst.dst, byteFlag, operand2Addr, operand1);
+            _setFlags(operand1 & 0x8000, operand1 == 0, 0, PSW_GET_C(cpu.PSW));
             break;
         }
 
@@ -540,7 +550,7 @@ void cpu_run(void)
         {
             DEBUG("TST / TSTB");
             operand1 = fetchOperand_(inst.dstMode, inst.dst, byteFlag, &operand1Addr);
-            setFlags_(operand1 & 0x8000, operand1 == 0, 0, 0);
+            _setFlags(operand1 & 0x8000, operand1 == 0, 0, 0);
             break;
         }
 
@@ -590,7 +600,7 @@ void cpu_run(void)
         {
             DEBUG("BPL");
             if(!PSW_GET_N(cpu.PSW))
-                cpu.GPR[7] += (int)inst.offset * 2;
+                cpu.GPR[7] += (cpu_word)inst.offset * 2;
             break;
         }
 

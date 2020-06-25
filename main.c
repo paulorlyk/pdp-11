@@ -1,7 +1,9 @@
 #include <stdlib.h>
 
+#include "task_scheduler.h"
 #include "cpu.h"
 #include "mem.h"
+#include "rk11.h"
 
 #include <unistd.h>
 
@@ -35,16 +37,31 @@ ph_addr bootstrapBase = 0001000;
 
 int main(void)
 {
+    ts_init();
     mem_init(bootstrapBase, (uint8_t *)bootstrap, sizeof(bootstrap));
+    dev_init();
+
+    rk11_init();
+    if(!rk11_loadDisk("img/unix_v5_rk/unix_v5_rk.dsk", 0))
+        return EXIT_FAILURE;
+    dev_registerDevice(rk11_getHandle());
+
     cpu_init(bootstrapBase);
 
     for(;;)
     {
         cpu_run();
 
-        usleep(1000 * 250);
+        const long int nSleepMax = 250 * TS_MILLISECONDS;
+
+        long int nSleep = ts_run();
+        if(nSleep == 0 || nSleep > nSleepMax)
+            nSleep = nSleepMax;
+
+        usleep(nSleepMax / TS_MICROSECONDS);
     }
 
+    rk11_destroy();
 
     return EXIT_SUCCESS;
 }
