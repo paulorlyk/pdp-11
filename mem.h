@@ -36,6 +36,6 @@ void mem_register_io(ph_addr ioStart, ph_addr ioEnd, io_rd_cb rd, io_wr_cb wr);
 void mem_deregister_io(ph_addr ioStart, ph_addr ioEnd);
 
 bool mem_read_physical(ph_addr addr, cpu_word* data);
-bool mem_write_physical(ph_addr addr, bool byte, cpu_word data);
+bool mem_write_physical(ph_addr addr, bool bByte, cpu_word data);
 
 #endif //MEM_H_FA19B89AB9CD44F9B591AA96AC60CD93

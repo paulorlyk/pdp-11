@@ -20,7 +20,7 @@ Loc.	Cont.	Instruction	Comment
 001012	000005
 001014	105710	tstb (r0)	wait for ready
 001016	100376  bpl .-2
-001020	000000	halt		(or 005007 to auto start)
+001020	005007	clr pc		start loaded bootstrap with jump to 0
 */
 uint16_t bootstrap[] = {
     0012700,    // mov #rkwc, r0
@@ -31,7 +31,7 @@ uint16_t bootstrap[] = {
     0000005,
     0105710,    // tstb (r0)
     0100376,    // bpl .-2
-    0000000,    // halt
+    0005007     // clr pc
 };
 ph_addr bootstrapBase = 0001000;
 
@@ -52,7 +52,7 @@ int main(void)
     {
         cpu_run();
 
-        const long int nSleepMax = 250 * TS_MILLISECONDS;
+        const long int nSleepMax = 1 * TS_MILLISECONDS;
 
         long int nSleep = ts_run();
         if(nSleep == 0 || nSleep > nSleepMax)

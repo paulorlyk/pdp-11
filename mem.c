@@ -128,7 +128,7 @@ bool mem_read_physical(ph_addr addr, cpu_word* data)
         return true;
     }
 
-    if(addr >= MEM_SIZE_WORDS)
+    if(addr >= MEM_SIZE_BYTES)
         return false;
 
     *data = mem.physicalMemory[addr >> 1];
@@ -136,9 +136,9 @@ bool mem_read_physical(ph_addr addr, cpu_word* data)
     return true;
 }
 
-bool mem_write_physical(ph_addr addr, bool byte, cpu_word data)
+bool mem_write_physical(ph_addr addr, bool bByte, cpu_word data)
 {
-    assert(byte || (addr & 1) == 0);
+    assert(bByte || (addr & 1) == 0);
 
     if(addr > MEM_UNIBUS_ADDR_MAX)
         return false;
@@ -146,16 +146,16 @@ bool mem_write_physical(ph_addr addr, bool byte, cpu_word data)
     if(addr >= MEM_16BIT_PERIPH_PAGE_ADDR)
     {
         // TODO: Trap?
-        assert(!byte);
+        assert(!bByte);
 
         _writeIOPage(MEM_UNIBUS_PERIPH_PAGE_ADDR + (addr - MEM_16BIT_PERIPH_PAGE_ADDR), data);
         return true;
     }
 
-    if(addr >= MEM_SIZE_WORDS)
+    if(addr >= MEM_SIZE_BYTES)
         return false;
 
-    if(byte)
+    if(bByte)
     {
         cpu_word w = 0;
         if(!mem_read_physical(addr & ~1U, &w))

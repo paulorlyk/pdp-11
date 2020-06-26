@@ -17,6 +17,7 @@ struct _task
     unsigned long int ts;
     bool scheduled;
     struct _task *next;
+    struct _task *prev;
 };
 
 static struct
@@ -87,7 +88,14 @@ void ts_cancel(ts_handle task)
     if(!pTask || !pTask->scheduled)
         return;
 
-    assert(0);
+    if(pTask->prev)
+        pTask->prev->next = pTask->next;
+    if(pTask->next)
+        pTask->next->prev = pTask->prev;
+
+    pTask->prev = NULL;
+    pTask->next = NULL;
+    pTask->scheduled = false;
 }
 
 long int ts_run(void)
