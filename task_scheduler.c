@@ -62,12 +62,19 @@ void ts_destroyTask(ts_handle task)
     free(task);
 }
 
-ts_handle ts_schedule(ts_handle task, unsigned long int timeout_ns)
+bool ts_isScheduled(ts_handle task)
+{
+    struct _task *pTask = (struct _task *)task;
+
+    return pTask && pTask->scheduled;
+}
+
+bool ts_schedule(ts_handle task, unsigned long int timeout_ns)
 {
     struct _task *pTask = (struct _task *)task;
 
     if(!pTask || pTask->scheduled)
-        return NULL;
+        return false;
 
     pTask->ts = _getMonotonicTS() + timeout_ns;
     pTask->scheduled = true;
@@ -79,7 +86,7 @@ ts_handle ts_schedule(ts_handle task, unsigned long int timeout_ns)
     pTask->next = *it;
     *it = pTask;
 
-    return pTask;
+    return true;
 }
 
 void ts_cancel(ts_handle task)

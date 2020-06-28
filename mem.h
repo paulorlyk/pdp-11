@@ -26,12 +26,12 @@ typedef uint32_t ph_addr;
 typedef uint16_t cpu_word;
 typedef uint16_t cpu_addr;
 
-typedef cpu_word (* io_rd_cb)(ph_addr);
-typedef void (* io_wr_cb)(ph_addr, cpu_word);
+typedef cpu_word (* io_rd_cb)(ph_addr, void*);
+typedef void (* io_wr_cb)(ph_addr, cpu_word, void*);
 
 void mem_init(ph_addr base, const uint8_t* buf, ph_size size);
 
-void mem_register_io(ph_addr ioStart, ph_addr ioEnd, io_rd_cb rd, io_wr_cb wr);
+void mem_register_io(ph_addr ioStart, ph_addr ioEnd, io_rd_cb rd, io_wr_cb wr, void* arg);
 
 void mem_deregister_io(ph_addr ioStart, ph_addr ioEnd);
 

@@ -15,9 +15,9 @@ struct _device
     ph_addr ioEnd;
     io_rd_cb rd;
     io_wr_cb wr;
-    cpu_word irq;
-    int irqPriority;
     irq_ack_cb irqACK;
+    void* arg;
+    int irqPriority;
     bool bIRQ;
     bool registered;
     struct _device *next;
@@ -52,7 +52,7 @@ void dev_init(void)
     memset(&devices, 0, sizeof(devices));
 }
 
-device_handle dev_initDevice(ph_addr ioStart, ph_addr ioEnd, io_rd_cb rd, io_wr_cb wr, cpu_word irq, int irqPriority, irq_ack_cb irqACK)
+device_handle dev_initDevice(ph_addr ioStart, ph_addr ioEnd, io_rd_cb rd, io_wr_cb wr, int irqPriority, irq_ack_cb irqACK, void* arg)
 {
     assert(ioStart <= ioEnd);
     assert((ioStart & 1) == 0);
@@ -63,7 +63,6 @@ device_handle dev_initDevice(ph_addr ioStart, ph_addr ioEnd, io_rd_cb rd, io_wr_
     assert(ioEnd <= MEM_UNIBUS_ADDR_MAX);
     assert(rd);
     assert(wr);
-    assert(irq);
     assert(irqPriority >= 0 && irqPriority <= IRQ_PRIORITY_MAX);
     assert(irqACK);
 
@@ -75,9 +74,9 @@ device_handle dev_initDevice(ph_addr ioStart, ph_addr ioEnd, io_rd_cb rd, io_wr_
     pDev->ioEnd = ioEnd;
     pDev->rd = rd;
     pDev->wr = wr;
-    pDev->irq = irq;
     pDev->irqPriority = irqPriority;
     pDev->irqACK = irqACK;
+    pDev->arg = arg;
 
     return pDev;
 }
@@ -113,7 +112,7 @@ void dev_registerDevice(device_handle device)
     if(pDev->bIRQ && (!devices.curDevIRQ || devices.curDevIRQ->irqPriority <= pDev->irqPriority))
         _updateIRQ();
 
-    mem_register_io(pDev->ioStart, pDev->ioEnd, pDev->rd, pDev->wr);
+    mem_register_io(pDev->ioStart, pDev->ioEnd, pDev->rd, pDev->wr, pDev->arg);
 }
 
 void dev_deregisterDevice(device_handle device)
@@ -131,6 +130,8 @@ void dev_deregisterDevice(device_handle device)
     pDev->prev = NULL;
     pDev->next = NULL;
     pDev->registered = false;
+
+    mem_deregister_io(pDev->ioStart, pDev->ioEnd);
 }
 
 void dev_setIRQ(device_handle device)
@@ -174,7 +175,5 @@ cpu_word dev_ackIRQ(device_handle device)
     if(!pDev)
         return 0;
 
-    pDev->irqACK();
-
-    return pDev->irq;
+    return pDev->irqACK(pDev->arg);
 }

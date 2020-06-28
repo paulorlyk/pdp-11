@@ -12,12 +12,38 @@
 
 #define SIGN_EXTEND_BYTE(b) (((b) & 0xFF) ^ ((~0xFF) * (((b) & 0x0080) != 0)))   // Assume two's complement integers
 
+#define BRANCH_IF(cond, offset)             \
+    do                                      \
+    {                                       \
+        if((cond))                          \
+            cpu.GPR[7] += (offset) * 2;     \
+    } while(0)                              \
+
+#define PUSH_STACK(word)                                        \
+    do                                                          \
+    {                                                           \
+        cpu_addr addr;                                          \
+        _calculateOperandAddress(_auto_dec, 6, false, &addr);   \
+        _storeDestResult(_auto_dec, 6, false, addr, (word));    \
+    } while(0)                                                  \
+
+#define POP_STACK(dest)                                     \
+    do                                                      \
+    {                                                       \
+        cpu_addr addr;                                      \
+        (dest) = _fetchOperand(_auto_inc, 6, false, &addr); \
+    } while(0)                                              \
+
+#define CALC_V(a, b, r)    ((((a) ^ (b)) & 0x8000) && !(((b) ^ (r)) & 0x8000))
+
 static struct
 {
     const char *arrOpcodeNameLUT[0x10000];
     const char *arrRegNameLUT[8];
     const char *arrAddrModePrefixLUT[8];
     const char *arrAddrModeSuffixLUT[8];
+
+    bool bDisassemblyOutput;
 
     cpu_word GPR[8];
     cpu_word PSW;
@@ -38,13 +64,13 @@ enum _opcode
     _add        = 0x6000,   // ADD      Add
     _sub        = 0xE000,   // SUB      Subtract
     _mul        = 0x7000,   // MUL      Multiply
-    _div        = 0x7100,   // DIV      Divide
-    _ash        = 0x7200,   // ASH      Arithmetic Shift
-    _ashc       = 0x7300,   // ASHC     Arithmetic Shift Combined
-    _xor        = 0x7400,   // XOR      Exclusive OR
-    _fp         = 0x7500,
-    _sys        = 0x7600,
-    _sob        = 0x7700,   // SOB      Subtract one and branch if not equal to 0
+    _div        = 0x7200,   // DIV      Divide
+    _ash        = 0x7400,   // ASH      Arithmetic Shift
+    _ashc       = 0x7600,   // ASHC     Arithmetic Shift Combined
+    _xor        = 0x7800,   // XOR      Exclusive OR
+    _fp         = 0x7A00,
+    _sys        = 0x7C00,
+    _sob        = 0x7E00,   // SOB      Subtract one and branch if not equal to 0
     _swab       = 0x00C0,   // SWAB     Swap Bytes
     _clr        = 0x0A00,   // CLR      Clear
     _clrb       = 0x8A00,   // CLRB     Clear
@@ -93,8 +119,9 @@ enum _opcode
     _bvs        = 0x8500,   // BVS      Branch if V bit set
     _bcc        = 0x8600,   // BCC      Branch if carry clear
     _bcs        = 0x8700,   // BCS      Branch if carry set
-
     _jmp        = 0x0040,   // JMP      Jump
+    _jsr        = 0x0800,   // JSR      Jump to Subroutine
+    _rts        = 0x0080,   // RTS      Return from Subroutine
 
     // 000000   HALT     Halt
     // 000001   WAIT     Wait for Interrupt
@@ -104,8 +131,6 @@ enum _opcode
     // 000005   RESET    Sends INIT on the UNIBUS for 10ms.
     // 000006   RTT      Return from Interrupt
     // 000007   MFPT     Move From Processor (PDP-11/44 ONLY)
-
-    // 00020R   RTS      Return from Subroutine
 
     // 00023N   SPL      Set priority level
 
@@ -123,18 +148,16 @@ enum _opcode
     // 000270   SEN      Set N
     // 000277   SCC      Set all condition codes
 
-    // 004RDD   JSR      Jump to Subroutine
-
-    // 007000   CSM      Call to Supervisor Mode (PDP-11/44 only)
-
-    // 076600   MED      Maintenance, Exam, and Dep
-
     // 104000   EMT      Emulator Trap
     //    ...
     // 104377   EMT      Emulator Trap
     // 104400   TRAP     Trap
     //    ...
     // 104777   TRAP     Trap
+
+    // 007000   CSM      Call to Supervisor Mode (PDP-11/44 only)
+
+    // 076600   MED      Maintenance, Exam, and Dep
 
     // 170003   LOUB     Load Microbreak Register
     // 170004   MNS      Maintenance normalization shift
@@ -158,7 +181,9 @@ enum _instructionType
     _instt_unknown,
     _instt_single_op,
     _instt_double_op,
-    _instt_branch
+    _instt_branch,
+    _instt_rts,
+    _instt_double_op_reg_src
 };
 
 struct _instruction
@@ -226,42 +251,120 @@ static void _decode(cpu_word inst, struct _instruction* pInst)
 
     pInst->type = _instt_unknown;
 
-    if((inst & 0x7000) == 0x0000)
+    if((inst & 0x7000) == 0x0000)   // x000 xxxx xxxx xxxx
     {
-        if(((inst & 0x7FC0) >= 0x0A00 && (inst & 0x7FC0) <= 0x0DC0))
+        if((inst & 0x7800) == 0x0800)    // x000 1xxx xxxx xxxx
         {
-            // Single-operand instructions
-            //  15  14 11  10   6   5  3   2      0
-            // [B] [0001] [Opcode] [Mode] [Register]
-            //
-            // Opcode   Mnemonic
-            // 010      CLR / CLRB
-            // 011      COM / COMB
-            // 012      INC / INCB
-            // 013      DEC / DECB
-            // 014      NEG / NEGB
-            // 015      ADC / ADCB
-            // 016      SBC / SBCB
-            // 017      TST / TSTB
-            // 020      ROR / RORB
-            // 021      ROL / ROLB
-            // 022      ASR / ASRB
-            // 023      ASL / ASLB
-            // 024      MARK / MTPS
-            // 025      MFPI / MFPD
-            // 026      MTPI / MTPD
-            // 027      SXT / MFPS
+            if((inst & 0x7E00) == 0x0800)    // x000 100x xxxx xxxx
+            {
+                if((inst & 0xFE00) == 0x0800)   // 0000 100x xxxx xxxx
+                {
+                    // JSR
+                    //  15    9   8     6   5  3   2      0
+                    // [0000100] [LinkReg] [Mode] [Register]
 
-            //DEBUG("Decoder: Single-operand instruction");
+                    //DEBUG("Decoder: Jsr instruction");
 
-            pInst->type = _instt_single_op;
-            pInst->opcode = inst & 0xFFC0;
-            pInst->dstMode = (inst & 0x0038) >> 3;
-            pInst->dst = (inst & 0x0007) >> 0;
+                    pInst->type = _instt_double_op;
+                    pInst->opcode = inst & 0xFE00;
+                    pInst->srcMode = _reg;
+                    pInst->src = (inst & 0x01C0) >> 6;
+                    pInst->dstMode = (inst & 0x0038) >> 3;
+                    pInst->dst = (inst & 0x0007) >> 0;
+                }
+                else    // 1000 100x xxxx xxxx
+                {
+                    // EMT / TRAP
+                    //  15    9   8        7  0
+                    // [1000100] [Opcode] [NNNN]
+                    //
+                    // Opcode   Mnemonic
+                    // 1040     EMT
+                    // 1044     TRAP
+
+                    DEBUG("UNKNOWN INSTRUCTION: 0%06o", inst);
+                    assert(false);
+                }
+            }
+            else if((inst & 0x7E00) == 0x0E00)    // x000 111x xxxx xxxx
+            {
+                DEBUG("UNKNOWN INSTRUCTION: 0%06o", inst);
+                assert(false);
+            }
+            else    // x000 1IIx xxxx xxxx; II != 0 && II != 3
+            {
+                // Single-operand instructions
+                //  15  14 11  10   6   5  3   2      0
+                // [B] [0001] [Opcode] [Mode] [Register]
+                //
+                // Opcode   Mnemonic
+                // 010      CLR / CLRB
+                // 011      COM / COMB
+                // 012      INC / INCB
+                // 013      DEC / DECB
+                // 014      NEG / NEGB
+                // 015      ADC / ADCB
+                // 016      SBC / SBCB
+                // 017      TST / TSTB
+                // 020      ROR / RORB
+                // 021      ROL / ROLB
+                // 022      ASR / ASRB
+                // 023      ASL / ASLB
+                // 024      MARK / MTPS
+                // 025      MFPI / MFPD
+                // 026      MTPI / MTPD
+                // 027      SXT / MFPS
+
+                //DEBUG("Decoder: Single-operand instruction");
+
+                pInst->type = _instt_single_op;
+                pInst->opcode = inst & 0xFFC0;
+                pInst->dstMode = (inst & 0x0038) >> 3;
+                pInst->dst = (inst & 0x0007) >> 0;
+            }
         }
-        else if((inst & 0x7800) == 0)
+        else if((inst & 0x7800) == 0x0000)   // x000 0xxx xxxx xxxx
         {
-            if(inst > 0x00FF)
+            if((inst & 0xFF00) == 0x0000)   // 0000 0000 xxxx xxxx
+            {
+                if((inst & 0xFFC0) == 0x0040 || (inst & 0xFFC0) == 0x00C0)  // 0000 0000 IIxx xxxx; II == 1 || II == 3
+                {
+                    // Single-operand instructions
+                    //  15            8   7    6   5  3   2      0
+                    // [0 0 0 0 0 0 0 0] [Opcode] [Mode] [Register]
+                    //
+                    // Opcode   Mnemonic
+                    // 01       JMP
+                    // 03       SWAB
+
+                    //DEBUG("Decoder: JMP/SWAB instruction");
+
+                    pInst->type = _instt_single_op;
+                    pInst->opcode = inst & 0xFFC0;
+                    pInst->dstMode = (inst & 0x0038) >> 3;
+                    pInst->dst = (inst & 0x0007) >> 0;
+                }
+                else if((inst & 0xFFF8) == 0x0080)  // 0000 0000 1000 0xxx
+                {
+                    // RTS
+                    //  15                      3   2      0
+                    // [0 0 0 0 0 0 0 0 1 0 0 0 0] [Register]
+
+                    //DEBUG("Decoder: RTS instruction");
+
+                    pInst->type = _instt_rts;
+                    pInst->opcode = inst & 0xFFF8;
+                    pInst->dst = (inst & 0x0007) >> 0;
+                }
+                else
+                {
+                    // System instructions
+
+                    DEBUG("UNKNOWN INSTRUCTION: 0%06o", inst);
+                    assert(false);
+                }
+            }
+            else    // B000 0III xxxx xxxx; B != 0 && III != 0
             {
                 // Conditional branch instructions
                 //  15      11  10   8   7    0
@@ -291,52 +394,11 @@ static void _decode(cpu_word inst, struct _instruction* pInst)
                 pInst->opcode = inst & 0xFF00;
                 pInst->offset = SIGN_EXTEND_BYTE(inst);
             }
-            else
-            {
-                if((inst & 0xFFC0) == 0x0040 || (inst & 0xFFC0) == 0x00C0)
-                {
-                    // Single-operand instructions
-                    //  15            8   7    6   5  3   2      0
-                    // [0 0 0 0 0 0 0 0] [Opcode] [Mode] [Register]
-                    //
-                    // Opcode   Mnemonic
-                    // 01       JMP
-                    // 03       SWAB
-
-                    //DEBUG("Decoder: Jump instruction");
-
-                    pInst->type = _instt_single_op;
-                    pInst->opcode = inst & 0xFFC0;
-                    pInst->dstMode = (inst & 0x0038) >> 3;
-                    pInst->dst = (inst & 0x0007) >> 0;
-                }
-                else
-                {
-                    // System instructions
-
-                    DEBUG("UNKNOWN INSTRUCTION: 0%06o", inst);
-                    assert(false);
-                }
-            }
-        }
-        else
-        {
-            // Single-operand instructions
-            //  15  14 11  10   6   5  3   2      0
-            // [B] [0001] [Opcode] [Mode] [Register]
-            //
-            // Opcode   Mnemonic
-            // 004r     JSR
-            // 104x     EMT
-            //
-
-            DEBUG("UNKNOWN INSTRUCTION: 0%06o", inst);
-            assert(false);
         }
     }
-    else if((inst & 0x7000) == 0x7000)
+    else if((inst & 0x7000) == 0x7000)  // x111 xxxx xxxx xxxx
     {
-        if((inst & 0x8000) == 0)
+        if((inst & 0xF000) == 0x7000)    // 0111 xxxx xxxx xxxx
         {
             // Double-operand instructions with register source operand
             //  15 12  11   9   8      6   5  3   2      0
@@ -352,20 +414,21 @@ static void _decode(cpu_word inst, struct _instruction* pInst)
             // 06       System instructions
             // 07       SOB
 
-            DEBUG("Decoder: Double-operand instruction with register source operand");
+            //DEBUG("Decoder: Double-operand instruction with register source operand");
 
-            pInst->opcode = inst & 0x7000;
+            pInst->type = _instt_double_op_reg_src;
+            pInst->opcode = inst & 0xFE00;
             pInst->reg = (inst & 0x01C0) >> 6;
             pInst->srcMode = (inst & 0x0038) >> 3;
             pInst->src = (inst & 0x0007) >> 0;
         }
-        else
+        else    // 1111 xxxx xxxx xxxx
         {
             DEBUG("UNKNOWN INSTRUCTION: 0%06o", inst);
             assert(false);
         }
     }
-    else
+    else    // xIII xxxx xxxx xxxx; III != 0 && III != 7
     {
         // Double-operand instructions
         //  15  14   12  11 9   8    6   5  3   2         0
@@ -399,7 +462,7 @@ static void _decode(cpu_word inst, struct _instruction* pInst)
 
 static const char* _formatInstructionOperand(enum _addressingMode mode, int reg, cpu_addr *pc)
 {
-    static char res[128] = "";
+    static char res[64] = "";
 
     int pos = 0;
 
@@ -416,10 +479,49 @@ static const char* _formatInstructionOperand(enum _addressingMode mode, int reg,
                 if(!mem_read_physical(*pc += 2, &data))
                     pos += sprintf(res + pos, "#?");
                 else
-                    pos += sprintf(res + pos, "#%d", data);
+                    pos += sprintf(res + pos, "#%06o", data);
 
                 return res;
             }
+
+            case _auto_inc_deferred: // PC Absolute
+            {
+                cpu_word data = 0;
+                if(!mem_read_physical(*pc += 2, &data))
+                    pos += sprintf(res + pos, "@#?");
+                else
+                    pos += sprintf(res + pos, "@#%06o", data);
+
+                return res;
+            }
+        }
+    }
+
+    switch(mode)
+    {
+        default:
+            break;
+
+        case _index:
+        {
+            cpu_word data = 0;
+            if(!mem_read_physical(*pc += 2, &data))
+                pos += sprintf(res + pos, "X(%s)", cpu.arrRegNameLUT[reg]);
+            else
+                pos += sprintf(res + pos, "#%06o(%s)", data, cpu.arrRegNameLUT[reg]);
+
+            return res;
+        }
+
+        case _index_deferred:
+        {
+            cpu_word data = 0;
+            if(!mem_read_physical(*pc += 2, &data))
+                pos += sprintf(res + pos, "@X(%s)", cpu.arrRegNameLUT[reg]);
+            else
+                pos += sprintf(res + pos, "@#%06o(%s)", data, cpu.arrRegNameLUT[reg]);
+
+            return res;
         }
     }
 
@@ -431,41 +533,40 @@ static const char* _formatInstructionOperand(enum _addressingMode mode, int reg,
     return res;
 }
 
-static void _printInstruction(cpu_addr pc, cpu_word instWord, const struct _instruction* pInst)
+static const char* _printInstruction(cpu_addr pc, cpu_word instWord, const struct _instruction* pInst)
 {
     static char res[256] = "";
 
-    int pos = 0;
+    int pos = snprintf(res, "0%06o: 0%06o\t%s ", pc, instWord, cpu.arrOpcodeNameLUT[pInst->opcode]);
 
     switch(pInst->type)
     {
         default:
         case _instt_unknown:
-        {
-            sprintf(res, "0%06o: 0%06o\t%s ?", pc, instWord, cpu.arrOpcodeNameLUT[pInst->opcode]);
+            pos += sprintf(res + pos, "?");
             break;
-        }
 
         case _instt_single_op:
-        {
-            pos += sprintf(res + pos, "0%06o: 0%06o\t%s ", pc, instWord, cpu.arrOpcodeNameLUT[pInst->opcode]);
             pos += sprintf(res + pos, "%s", _formatInstructionOperand(pInst->dstMode, pInst->dst, &pc));
             break;
-        }
 
         case _instt_double_op:
-        {
-            pos += sprintf(res + pos, "0%06o: 0%06o\t%s ", pc, instWord, cpu.arrOpcodeNameLUT[pInst->opcode]);
             pos += sprintf(res + pos, "%s, ", _formatInstructionOperand(pInst->srcMode, pInst->src, &pc));
             pos += sprintf(res + pos, "%s", _formatInstructionOperand(pInst->dstMode, pInst->dst, &pc));
             break;
-        }
 
         case _instt_branch:
-        {
-            pos += sprintf(res + pos, "0%06o: 0%06o\t%s .%+d", pc, instWord, cpu.arrOpcodeNameLUT[pInst->opcode], pInst->offset);
+            pos += sprintf(res + pos, ".%+d", pInst->offset);
             break;
-        }
+
+        case _instt_rts:
+            pos += sprintf(res + pos, "%s", cpu.arrRegNameLUT[pInst->dst]);
+            break;
+
+        case _instt_double_op_reg_src:
+            pos += sprintf(res + pos, "%s, ", _formatInstructionOperand(pInst->srcMode, pInst->src, &pc));
+            pos += sprintf(res + pos, "%s", cpu.arrRegNameLUT[pInst->dst]);
+            break;
     }
 
     DEBUG("%s", res);
@@ -531,7 +632,7 @@ static bool _calculateOperandAddress(enum _addressingMode mode, int reg, bool bB
     return true;
 }
 
-static cpu_word fetchOperand_(enum _addressingMode mode, int reg, bool bByte, cpu_addr *pAddr)
+static cpu_word _fetchOperand(enum _addressingMode mode, int reg, bool bByte, cpu_addr *pAddr)
 {
     if(_calculateOperandAddress(mode, reg, bByte, pAddr))
         return _read(*pAddr, bByte);
@@ -656,6 +757,8 @@ static void _initNameLUT(void)
     cpu.arrOpcodeNameLUT[_bcc]    = "BCC/BHIS";
     cpu.arrOpcodeNameLUT[_bcs]    = "BCS/BLO";
     cpu.arrOpcodeNameLUT[_jmp]    = "JMP";
+    cpu.arrOpcodeNameLUT[_jsr]    = "JSR";
+    cpu.arrOpcodeNameLUT[_rts]    = "RTS";
 }
 
 void cpu_init(cpu_word R7)
@@ -670,37 +773,26 @@ void cpu_init(cpu_word R7)
 void cpu_run(void)
 {
     // TODO: Debug
-    if(cpu.GPR[7] >= 0137000)
-    {
-        if(cpu.GPR[0] == cpu.GPR[6])
-            DEBUG("BREAK");
-    }
+    //if(cpu.GPR[7] >= 0137000)
+    //{
+    //    cpu.bDisassemblyOutput = true;
+    //}
 
     cpu_word instWord = _fetchPC();
     //DEBUG("Instruction fetch: 0%06o: 0%06o", cpu.GPR[7] - 2, instWord);
 
     struct _instruction inst = {0};
     _decode(instWord, &inst);
-    _printInstruction(cpu.GPR[7] - 2, instWord, &inst);
+
+    if(cpu.bDisassemblyOutput)
+    {
+        _printInstruction(cpu.GPR[7] - 2, instWord, &inst);
+    }
 
     // TODO: 3 word instruction
     if((inst.srcMode == _index || inst.srcMode == _index_deferred) && (inst.dstMode == _index || inst.dstMode == _index_deferred))
     {
         DEBUG("Double index instruction - not sure how to execute");
-        assert(false);
-    }
-
-    // TODO: 3 word instruction
-    if(((inst.srcMode == _index || inst.srcMode == _index_deferred) && inst.dst == 7) || ((inst.dstMode == _index || inst.dstMode == _index_deferred) && inst.src == 7))
-    {
-        DEBUG("Index + PC or PC + index instruction - not sure how to execute");
-        assert(false);
-    }
-
-    // TODO: 3 word instruction
-    if(inst.dst == 7 && inst.src == 7)
-    {
-        DEBUG("PC + PC instruction - not sure how to execute");
         assert(false);
     }
 
@@ -717,36 +809,49 @@ void cpu_run(void)
         case _mov:
         case _movb:
         {
-            srcVal = fetchOperand_(inst.srcMode, inst.src, byteFlag, &srcAddr);
+            srcVal = _fetchOperand(inst.srcMode, inst.src, byteFlag, &srcAddr);
             _calculateOperandAddress(inst.dstMode, inst.dst, byteFlag, &dstAddr);
             _storeDestResult(inst.dstMode, inst.dst, byteFlag, dstAddr, srcVal);
-            _setFlags(srcVal & 0x8000, srcVal == 0, 0, PSW_GET_C(cpu.PSW));
+            _setFlags(srcVal & 0x8000, !srcVal, 0, PSW_GET_C(cpu.PSW));
             break;
         }
 
         case _cmp:
         case _cmpb:
         {
-            srcVal = fetchOperand_(inst.srcMode, inst.src, byteFlag, &srcAddr);
-            dstVal = fetchOperand_(inst.dstMode, inst.dst, byteFlag, &dstAddr);
-            int_least32_t diff = srcVal - dstVal;
-            _setFlags(diff < 0,
-                      diff == 0,
-                      ((srcVal ^ dstVal) & 0x8000) && !((dstVal ^ diff) & 0x8000),
-                      diff & 0x10000);
+            srcVal = _fetchOperand(inst.srcMode, inst.src, byteFlag, &srcAddr);
+            dstVal = _fetchOperand(inst.dstMode, inst.dst, byteFlag, &dstAddr);
+            int_least32_t res = srcVal - dstVal;
+            _setFlags(res < 0, !res, CALC_V(srcVal, dstVal, res), res & 0x10000);
             break;
         }
 
         case _bit: assert(false);
         case _bitb: assert(false);
 
-        case _bic: assert(false);
-        case _bicb: assert(false);
+        case _bic:
+        case _bicb:
+        {
+            srcVal = _fetchOperand(inst.srcMode, inst.src, byteFlag, &srcAddr);
+            dstVal = _fetchOperand(inst.dstMode, inst.dst, byteFlag, &dstAddr);
+            dstVal &= ~srcVal;
+            _storeDestResult(inst.dstMode, inst.dst, byteFlag, dstAddr, dstVal);
+            _setFlags(dstVal & 0x8000, !dstVal, 0, PSW_GET_C(cpu.PSW));
+            break;
+        }
 
         case _bis: assert(false);
         case _bisb: assert(false);
 
-        case _add: assert(false);
+        case _add:
+        {
+            srcVal = _fetchOperand(inst.srcMode, inst.src, byteFlag, &srcAddr);
+            dstVal = _fetchOperand(inst.dstMode, inst.dst, byteFlag, &dstAddr);
+            int_least32_t res = srcVal + dstVal;
+            _storeDestResult(inst.dstMode, inst.dst, byteFlag, dstAddr, res);
+            _setFlags(res < 0, !res, CALC_V(srcVal, dstVal, res), res & 0x10000);
+            break;
+        }
 
         case _sub: assert(false);
 
@@ -754,7 +859,37 @@ void cpu_run(void)
 
         case _div: assert(false);
 
-        case _ash: assert(false);
+        case _ash:
+        {
+            dstVal = cpu.GPR[inst.reg];
+            srcVal = _fetchOperand(inst.srcMode, inst.src, byteFlag, &srcAddr);
+
+            // The shift bits count ranges from -32 (right shift)
+            // to +31 (left shift). Choose 64bit uints here to
+            // avoid undefined behavior while shifting.
+            uint_least64_t res = dstVal;
+            bool c = PSW_GET_C(cpu.PSW);
+
+            if(srcVal & 0x0020)
+            {
+                // Negative - right shift
+                int n = 0x0040 - (srcVal & 0x003F);
+                res >>= n;
+                if(dstVal & 0x8000)
+                    res |= ~(0x7FFFULL >> n);
+                c = dstVal & (1ULL << (n - 1));
+            }
+            else if(srcVal & 0x003F)
+            {
+                // Positive - right shift
+                int n = srcVal & 0x003F;
+                res <<= n;
+                c = dstVal & (0x8000ULL >> (n - 1));
+            }
+
+            _setFlags(res & 0x8000, !(res & 0xFFFF), (res ^ dstVal) & 0x8000, c);
+            cpu.GPR[inst.reg] = res;
+        }
 
         case _ashc: assert(false);
 
@@ -798,8 +933,8 @@ void cpu_run(void)
         case _tst:
         case _tstb:
         {
-            dstVal = fetchOperand_(inst.dstMode, inst.dst, byteFlag, &dstAddr);
-            _setFlags(dstVal & 0x8000, dstVal == 0, 0, 0);
+            dstVal = _fetchOperand(inst.dstMode, inst.dst, byteFlag, &dstAddr);
+            _setFlags(dstVal & 0x8000, !dstVal, 0, 0);
             break;
         }
 
@@ -831,22 +966,10 @@ void cpu_run(void)
 
         case _mfps: assert(false);
 
-        case _br:
-        {
-            cpu.GPR[7] += (cpu_word)inst.offset * 2;
-            break;
-        }
-
-        case _bne:
-        {
-            if(!PSW_GET_Z(cpu.PSW))
-                cpu.GPR[7] += (cpu_word)inst.offset * 2;
-            break;
-        }
-
-        case _beq: assert(false);
-
-        case _bge: assert(false);
+        case _br:   BRANCH_IF(true, inst.offset); break;
+        case _bne:  BRANCH_IF(!PSW_GET_Z(cpu.PSW), inst.offset); break;
+        case _beq:  BRANCH_IF(PSW_GET_Z(cpu.PSW), inst.offset); break;
+        case _bge:  BRANCH_IF(PSW_GET_N(cpu.PSW) == PSW_GET_V(cpu.PSW), inst.offset); break;
 
         case _blt: assert(false);
 
@@ -854,16 +977,11 @@ void cpu_run(void)
 
         case _ble: assert(false);
 
-        case _bpl:
-        {
-            if(!PSW_GET_N(cpu.PSW))
-                cpu.GPR[7] += (cpu_word)inst.offset * 2;
-            break;
-        }
+        case _bpl: BRANCH_IF(!PSW_GET_N(cpu.PSW), inst.offset); break;
 
         case _bmi: assert(false);
 
-        case _bhi: assert(false);
+        case _bhi: BRANCH_IF(!PSW_GET_C(cpu.PSW) && !PSW_GET_Z(cpu.PSW), inst.offset); break;
 
         case _blos: assert(false);
 
@@ -871,19 +989,8 @@ void cpu_run(void)
 
         case _bvs: assert(false);
 
-        case _bcc:
-        {
-            if(!PSW_GET_C(cpu.PSW))
-                cpu.GPR[7] += (cpu_word)inst.offset * 2;
-            break;
-        }
-
-        case _bcs:
-        {
-            if(PSW_GET_C(cpu.PSW))
-                cpu.GPR[7] += (cpu_word)inst.offset * 2;
-            break;
-        }
+        case _bcc: BRANCH_IF(!PSW_GET_C(cpu.PSW), inst.offset); break;
+        case _bcs: BRANCH_IF(PSW_GET_C(cpu.PSW), inst.offset); break;
 
         case _jmp:
         {
@@ -893,6 +1000,26 @@ void cpu_run(void)
                 assert(false);
             }
             cpu.GPR[7] = dstAddr;
+            break;
+        }
+
+        case _jsr:
+        {
+            if(!_calculateOperandAddress(inst.dstMode, inst.dst, byteFlag, &dstAddr))
+            {
+                // TODO: Illegal instruction trap
+                assert(false);
+            }
+            PUSH_STACK(cpu.GPR[inst.src]);
+            cpu.GPR[inst.src] = cpu.GPR[7];
+            cpu.GPR[7] = dstAddr;
+            break;
+        }
+
+        case _rts:
+        {
+            cpu.GPR[7] = cpu.GPR[inst.dst];
+            POP_STACK(cpu.GPR[inst.dst]);
             break;
         }
 

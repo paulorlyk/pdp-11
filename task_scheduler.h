@@ -5,6 +5,8 @@
 #ifndef TASK_SCHEDULER_H_B71DBF1E154240A18533E510CAF62AAF
 #define TASK_SCHEDULER_H_B71DBF1E154240A18533E510CAF62AAF
 
+#include <stdbool.h>
+
 typedef void (*ts_cb)(void*);
 
 typedef void* ts_handle;
@@ -20,7 +22,9 @@ ts_handle ts_createTask(ts_cb cb, void* arg);
 
 void ts_destroyTask(ts_handle task);
 
-ts_handle ts_schedule(ts_handle task, unsigned long int timeout_ns);
+bool ts_isScheduled(ts_handle task);
+
+bool ts_schedule(ts_handle task, unsigned long int timeout_ns);
 
 void ts_cancel(ts_handle task);
 

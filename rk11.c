@@ -11,7 +11,6 @@
 #include <assert.h>
 #include <string.h>
 #include <stdio.h>
-#include <math.h>
 
 // Drive Status Register (RKDS)
 #define RK11_REG_RKDS   0777400
@@ -188,10 +187,7 @@ static struct
     cpu_word regs[8];
     device_handle device;
     bool bINT;
-    struct
-    {
-        int drive;
-    } cmd;
+    int currentDrive;
 } rk11;
 
 static void _updateInterrupts(void)
@@ -267,7 +263,7 @@ static void _runFunction(void)
     //rk11.bINT = false;
     //_updateInterrupts();
 
-    rk11.cmd.drive = RK11_RKDA_GET_DRIVE(rk11.regs[RK11_RKDA]);
+    rk11.currentDrive = RK11_RKDA_GET_DRIVE(rk11.regs[RK11_RKDA]);
 
     int func = RK11_RKCS_GET_FUNC(rk11.regs[RK11_RKCS]);
 
@@ -285,7 +281,7 @@ static void _runFunction(void)
         assert(false);
     }
 
-    struct _rk05 *disk = rk11.disks + rk11.cmd.drive;
+    struct _rk05 *disk = rk11.disks + rk11.currentDrive;
 
     if(!disk->bConnected)
     {
@@ -484,11 +480,13 @@ static void _unloadDisk(int n)
     _updateInterrupts();
 }
 
-static cpu_word _read(ph_addr addr)
+static cpu_word _read(ph_addr addr, void* arg)
 {
     assert(addr >= RK11_PERIPH_START);
     assert(addr < RK11_PERIPH_END);
     assert((addr & 1) == 0);
+
+    (void)arg;
 
     int reg = (addr - RK11_PERIPH_START) >> 1;
 
@@ -523,11 +521,13 @@ static cpu_word _read(ph_addr addr)
     return rk11.regs[reg];
 }
 
-static void _write(ph_addr addr, cpu_word data)
+static void _write(ph_addr addr, cpu_word data, void* arg)
 {
     assert(addr >= RK11_PERIPH_START);
     assert(addr < RK11_PERIPH_END);
     assert((addr & 1) == 0);
+
+    (void)arg;
 
     switch(addr)
     {
@@ -583,16 +583,21 @@ static void _write(ph_addr addr, cpu_word data)
     }
 }
 
-static void _irqACK(void)
+static cpu_word _irqACK(void* arg)
 {
+    (void)arg;
+
+    // TODO: Implement
     assert(false);
+
+    return RK11_IRQ;
 }
 
 void rk11_init(void)
 {
     memset(&rk11, 0, sizeof(rk11));
 
-    rk11.device = dev_initDevice(RK11_PERIPH_START, RK11_PERIPH_END, &_read, &_write, RK11_IRQ, RK11_IRQ_PRIORITY, &_irqACK);
+    rk11.device = dev_initDevice(RK11_PERIPH_START, RK11_PERIPH_END, &_read, &_write, RK11_IRQ_PRIORITY, &_irqACK, NULL);
 
     for(int i = 0; i < RK05_DISKS_MAX; ++i)
     {

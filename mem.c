@@ -13,6 +13,7 @@ struct _periph_io
 {
     io_rd_cb read;
     io_wr_cb write;
+    void* arg;
 };
 
 static struct
@@ -21,17 +22,19 @@ static struct
     struct _periph_io peripheralPageMap[MEM_PERIPH_PAGE_SIZE_WORDS];
 } mem;
 
-static cpu_word _ioDummyRead(ph_addr addr)
+static cpu_word _ioDummyRead(ph_addr addr, void* arg)
 {
     // TODO: Trap
     DEBUG("UNIBUS: Reading unknown periphery page address: 0%08o", addr);
+    assert(false);
     return 0;
 }
 
-static void _ioDummyWrite(ph_addr addr, cpu_word data)
+static void _ioDummyWrite(ph_addr addr, cpu_word data, void* arg)
 {
     // TODO: Trap
     DEBUG("UNIBUS: Writing unknown periphery page address: 0%08o, data: 0%06o", addr, data);
+    assert(false);
 }
 
 static struct _periph_io* _getPeriphIO(ph_addr addr)
@@ -45,12 +48,14 @@ static struct _periph_io* _getPeriphIO(ph_addr addr)
 
 static cpu_word _readIOPage(ph_addr addr)
 {
-    return _getPeriphIO(addr)->read(addr);
+    struct _periph_io* pio = _getPeriphIO(addr);
+    return pio->read(addr, pio->arg);
 }
 
 static void _writeIOPage(ph_addr addr, cpu_word data)
 {
-    _getPeriphIO(addr)->write(addr, data);
+    struct _periph_io* pio = _getPeriphIO(addr);
+    pio->write(addr, data, pio->arg);
 }
 
 void mem_init(ph_addr base, const uint8_t* buf, ph_size size)
@@ -70,7 +75,7 @@ void mem_init(ph_addr base, const uint8_t* buf, ph_size size)
     }
 }
 
-void mem_register_io(ph_addr ioStart, ph_addr ioEnd, io_rd_cb rd, io_wr_cb wr)
+void mem_register_io(ph_addr ioStart, ph_addr ioEnd, io_rd_cb rd, io_wr_cb wr, void* arg)
 {
     assert(ioStart <= ioEnd);
     assert((ioStart & 1) == 0);
@@ -92,6 +97,7 @@ void mem_register_io(ph_addr ioStart, ph_addr ioEnd, io_rd_cb rd, io_wr_cb wr)
 
         mem.peripheralPageMap[i].read = rd;
         mem.peripheralPageMap[i].write = wr;
+        mem.peripheralPageMap[i].arg = arg;
     }
 }
 
@@ -112,6 +118,7 @@ void mem_deregister_io(ph_addr ioStart, ph_addr ioEnd)
     {
         mem.peripheralPageMap[i].read = &_ioDummyRead;
         mem.peripheralPageMap[i].write = &_ioDummyWrite;
+        mem.peripheralPageMap[i].arg = NULL;
     }
 }
 

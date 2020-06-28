@@ -11,11 +11,11 @@
 
 typedef void* device_handle;
 
-typedef void (*irq_ack_cb)(void);
+typedef cpu_word (*irq_ack_cb)(void *);
 
 void dev_init(void);
 
-device_handle dev_initDevice(ph_addr ioStart, ph_addr ioEnd, io_rd_cb rd, io_wr_cb wr, cpu_word irq, int irqPriority, irq_ack_cb irqACK);
+device_handle dev_initDevice(ph_addr ioStart, ph_addr ioEnd, io_rd_cb rd, io_wr_cb wr, int irqPriority, irq_ack_cb irqACK, void* arg);
 
 void dev_destroyDevice(device_handle device);
 
