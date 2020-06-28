@@ -533,11 +533,11 @@ static const char* _formatInstructionOperand(enum _addressingMode mode, int reg,
     return res;
 }
 
-static const char* _printInstruction(cpu_addr pc, cpu_word instWord, const struct _instruction* pInst)
+static const char* _formatInstruction(cpu_addr pc, cpu_word instWord, const struct _instruction* pInst)
 {
     static char res[256] = "";
 
-    int pos = snprintf(res, "0%06o: 0%06o\t%s ", pc, instWord, cpu.arrOpcodeNameLUT[pInst->opcode]);
+    int pos = sprintf(res, "0%06o: 0%06o\t%s ", pc, instWord, cpu.arrOpcodeNameLUT[pInst->opcode]);
 
     switch(pInst->type)
     {
@@ -569,7 +569,7 @@ static const char* _printInstruction(cpu_addr pc, cpu_word instWord, const struc
             break;
     }
 
-    DEBUG("%s", res);
+    return res;
 }
 
 static bool _calculateOperandAddress(enum _addressingMode mode, int reg, bool bByte, cpu_addr *pAddr)
@@ -786,7 +786,10 @@ void cpu_run(void)
 
     if(cpu.bDisassemblyOutput)
     {
-        _printInstruction(cpu.GPR[7] - 2, instWord, &inst);
+        DEBUG("%s", _formatInstruction(cpu.GPR[7] - 2, instWord, &inst));
+
+        // TODO: Debug
+        //int dbg = 0;
     }
 
     // TODO: 3 word instruction
@@ -821,13 +824,20 @@ void cpu_run(void)
         {
             srcVal = _fetchOperand(inst.srcMode, inst.src, byteFlag, &srcAddr);
             dstVal = _fetchOperand(inst.dstMode, inst.dst, byteFlag, &dstAddr);
-            int_least32_t res = srcVal - dstVal;
+            int32_t res = srcVal - dstVal;
             _setFlags(res < 0, !res, CALC_V(srcVal, dstVal, res), res & 0x10000);
             break;
         }
 
-        case _bit: assert(false);
-        case _bitb: assert(false);
+        case _bit:
+        case _bitb:
+        {
+            srcVal = _fetchOperand(inst.srcMode, inst.src, byteFlag, &srcAddr);
+            dstVal = _fetchOperand(inst.dstMode, inst.dst, byteFlag, &dstAddr);
+            cpu_word res = srcVal & dstVal;
+            _setFlags(res & 0x8000, !res, 0, PSW_GET_C(cpu.PSW));
+            break;
+        }
 
         case _bic:
         case _bicb:
@@ -840,14 +850,22 @@ void cpu_run(void)
             break;
         }
 
-        case _bis: assert(false);
-        case _bisb: assert(false);
+        case _bis:
+        case _bisb:
+        {
+            srcVal = _fetchOperand(inst.srcMode, inst.src, byteFlag, &srcAddr);
+            dstVal = _fetchOperand(inst.dstMode, inst.dst, byteFlag, &dstAddr);
+            dstVal |= srcVal;
+            _storeDestResult(inst.dstMode, inst.dst, byteFlag, dstAddr, dstVal);
+            _setFlags(dstVal & 0x8000, !dstVal, 0, PSW_GET_C(cpu.PSW));
+            break;
+        }
 
         case _add:
         {
             srcVal = _fetchOperand(inst.srcMode, inst.src, byteFlag, &srcAddr);
             dstVal = _fetchOperand(inst.dstMode, inst.dst, byteFlag, &dstAddr);
-            int_least32_t res = srcVal + dstVal;
+            int32_t res = srcVal + dstVal;
             _storeDestResult(inst.dstMode, inst.dst, byteFlag, dstAddr, res);
             _setFlags(res < 0, !res, CALC_V(srcVal, dstVal, res), res & 0x10000);
             break;
@@ -857,7 +875,35 @@ void cpu_run(void)
 
         case _mul: assert(false);
 
-        case _div: assert(false);
+        case _div:
+        {
+            srcVal = _fetchOperand(inst.srcMode, inst.src, byteFlag, &srcAddr);
+            if(srcVal != 0)
+            {
+                // Convert to signed integer
+                int32_t den = ((int32_t)(srcVal & 0x7FFF)) - ((int32_t)(srcVal & 0x8000));
+
+                // Assemble 32 bit value
+                uint32_t arg = cpu.GPR[inst.reg | 1] | (((uint32_t)cpu.GPR[inst.reg]) << 16);
+                // Convert to signed integer
+                int32_t num = ((int32_t)(arg & 0x7FFFFFFF)) - ((int32_t)(arg & 0x80000000ULL));
+
+                int32_t quot = num / den;
+                int32_t rem = num % den;
+                if(quot < 0x8000 && quot > -0x10000)
+                {
+                    cpu.GPR[inst.reg] = quot & 0xFFFF;
+                    cpu.GPR[inst.reg | 1] = rem & 0xFFFF;
+
+                    _setFlags(quot < 0, !quot, 0, 0);
+                }
+                else
+                    _setFlags(0, 0, 1, 0);  // Result is unrepresentable in 16 bit register
+            }
+            else
+                _setFlags(0, 0, 1, 1);  // Division by 0
+            break;
+        }
 
         case _ash:
         {
@@ -867,7 +913,7 @@ void cpu_run(void)
             // The shift bits count ranges from -32 (right shift)
             // to +31 (left shift). Choose 64bit uints here to
             // avoid undefined behavior while shifting.
-            uint_least64_t res = dstVal;
+            uint64_t res = dstVal;
             bool c = PSW_GET_C(cpu.PSW);
 
             if(srcVal & 0x0020)
@@ -889,6 +935,7 @@ void cpu_run(void)
 
             _setFlags(res & 0x8000, !(res & 0xFFFF), (res ^ dstVal) & 0x8000, c);
             cpu.GPR[inst.reg] = res;
+            break;
         }
 
         case _ashc: assert(false);
@@ -915,8 +962,15 @@ void cpu_run(void)
         case _com: assert(false);
         case _comb: assert(false);
 
-        case _inc: assert(false);
-        case _incb: assert(false);
+        case _inc:
+        case _incb:
+        {
+            dstVal = _fetchOperand(inst.dstMode, inst.dst, byteFlag, &dstAddr);
+            ++dstVal;
+            _setFlags(dstVal < 0, !dstVal, dstVal == 0x8000, PSW_GET_C(cpu.PSW));
+            _storeDestResult(inst.dstMode, inst.dst, byteFlag, dstAddr, dstVal);
+            break;
+        }
 
         case _dec: assert(false);
         case _decb: assert(false);
@@ -947,8 +1001,17 @@ void cpu_run(void)
         case _asr: assert(false);
         case _asrb: assert(false);
 
-        case _asl: assert(false);
-        case _aslb: assert(false);
+        case _asl:
+        case _aslb:
+        {
+            uint32_t res = _fetchOperand(inst.dstMode, inst.dst, byteFlag, &dstAddr);
+            res <<= 1;
+            bool n = res & 0x8000;
+            bool c = res & 0x10000;
+            _setFlags(n, !res, n != c, c);
+            _storeDestResult(inst.dstMode, inst.dst, byteFlag, dstAddr, res);
+            break;
+        }
 
         case _mark: assert(false);
 

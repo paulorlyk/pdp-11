@@ -48,12 +48,16 @@ static struct _periph_io* _getPeriphIO(ph_addr addr)
 
 static cpu_word _readIOPage(ph_addr addr)
 {
+    //DEBUG("UNIBUS: I/O read: 0%06o", addr);
+
     struct _periph_io* pio = _getPeriphIO(addr);
     return pio->read(addr, pio->arg);
 }
 
 static void _writeIOPage(ph_addr addr, cpu_word data)
 {
+    //DEBUG("UNIBUS: I/O write: 0%06o -> addr 0%06o", data, addr);
+
     struct _periph_io* pio = _getPeriphIO(addr);
     pio->write(addr, data, pio->arg);
 }

@@ -412,6 +412,9 @@ static void _diskTaskCb(void *arg)
                 assert(false);
             }
 
+            DEBUG("RK11: Reading %lu words from disk %d, cyl %d surf %d sect %d to memory location %u",
+                  nWordsCount, rk11.currentDrive, disk->nCylinder, disk->nSurface, disk->nSector, addr);
+
             for(nWordsDone = 0; nWordsDone < nWordsCount; ++nWordsDone)
             {
                 if(!mem_write_physical(addr, false, *data++))
