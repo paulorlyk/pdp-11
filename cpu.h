@@ -5,7 +5,7 @@
 #ifndef CPU_H_63FF543D3CE340CEA2683539FDDB2A0E
 #define CPU_H_63FF543D3CE340CEA2683539FDDB2A0E
 
-#include "mem.h"
+#include "device.h"
 
 #include <stdint.h>
 
@@ -79,7 +79,11 @@
 #define PSW_GET_C(psw) GET_BIT_FIELD((psw), PSW_C_MASK, PSW_C_OFFSET)
 #define PSW_SET_C(psw, val) SET_BIT_FIELD((psw), (val), PSW_C_MASK, PSW_C_OFFSET)
 
-void cpu_init(cpu_word R7);
+bool cpu_init(cpu_word R7);
+
+void cpu_destroy(void);
+
+device_handle cpu_getHandle(void);
 
 void cpu_run(void);
 

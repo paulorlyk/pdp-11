@@ -13,9 +13,37 @@ typedef void* device_handle;
 
 typedef cpu_word (*irq_ack_cb)(void *);
 
+typedef struct
+{
+    ph_addr ioStart;    // First address of I/O region
+    ph_addr ioEnd;      // Last address of I/O region
+    io_rd_cb rd;
+    io_wr_cb wr;
+    void* arg;
+} dev_io_info;
+
 void dev_init(void);
 
-device_handle dev_initDevice(ph_addr ioStart, ph_addr ioEnd, io_rd_cb rd, io_wr_cb wr, int irqPriority, irq_ack_cb irqACK, void* arg);
+// ioMap - array of dev_io_info structures terminated by element with NULL value in .rd and/or .wr fields.
+//      May be NULL if device does not have any memory mapped IO.
+//      Fields of dev_io_info must comply to the following requirements:
+//          - ioStart <= ioEnd
+//          - (ioStart & 1) == 0
+//          - (ioEnd & 1) == 0
+//          - ioStart >= MEM_UNIBUS_PERIPH_PAGE_ADDR
+//          - ioEnd >= MEM_UNIBUS_PERIPH_PAGE_ADDR
+//          - ioStart <= MEM_UNIBUS_ADDR_MAX
+//          - ioEnd <= MEM_UNIBUS_ADDR_MAX
+//          - rd != NULL (except of the last element in the ioMap array)
+//          - wr != NULL (except of the last element in the ioMap array)
+// irqPriority - must be positive and less then IRQ_PRIORITY_MAX.
+// irqACK - IRQ acknowledgment callback, may be NULL if device does not
+//          require any interrupts.
+// irqAckCbArg - argument with which irqACK will be called.
+device_handle dev_initDevice(const dev_io_info *ioMap,
+                             int irqPriority,
+                             irq_ack_cb irqACK,
+                             void* irqAckCbArg);
 
 void dev_destroyDevice(device_handle device);
 

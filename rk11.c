@@ -12,28 +12,13 @@
 #include <string.h>
 #include <stdio.h>
 
-// Drive Status Register (RKDS)
 #define RK11_REG_RKDS   0777400
-
-// Error Register (RKER)
 //#define RK11_REG_RKER   0777402
-
-// Control Status Register (RKCS)
 #define RK11_REG_RKCS   0777404
-
-// Word Count Register (RKWC)
 #define RK11_REG_RKWC   0777406
-
-// Current Bus Address Register (RKBA)
 #define RK11_REG_RKBA   0777410
-
-// Disk Address Register (RKDA)
 #define RK11_REG_RKDA   0777412
-
-// Maintenance Register (RKMR)
 //#define RK11_REG_RKMR   0777414
-
-// Data Buffer Register (RKDB)
 #define RK11_REG_RKDB   0777416
 
 #define RK11_PERIPH_START   RK11_REG_RKDS
@@ -157,7 +142,7 @@
 #define RK11_RKDA_SECTORS                   12
 #define RK11_RKDA_GET_SURFACE(rkda)         (((rkda) >> 4) & 0x0001)
 #define RK11_RKDA_SET_SURFACE(rkda, surf)   ((rkda) = ((rkda) & ~(1 << 4)) | (((surf) & 1) << 4))
-//#define RK11_RKDA_SURFACES                 2
+#define RK11_RKDA_SURFACES                  2
 #define RK11_RKDA_GET_CYLINDER(rkda)        (((rkda) >> 5) & 0x00FF)
 #define RK11_RKDA_SET_CYLINDER(rkda, cyl)   ((rkda) = ((rkda) & ~(0x00FF << 5)) | (((cyl) & 0x00FF) << 5))
 #define RK11_RKDA_CYLINDERS                 0313
@@ -166,7 +151,7 @@
 //#define RK11_RKMR   6
 //#define RK11_RKDB   7
 
-#define RK11_CYL_SEEK_TIME_MS   10
+#define RK11_CYL_SEEK_TIME_US   250
 
 #define RK11_SECTOR_SIZE_WORDS    256
 
@@ -340,14 +325,14 @@ static void _runFunction(void)
         return _finishFunction();
     }
 
-    unsigned long int ulOpTime = RK11_CYL_SEEK_TIME_MS * (abs(disk->nCylinder - nCylinder) + 1);
+    unsigned long int ulOpTime = RK11_CYL_SEEK_TIME_US * (abs(disk->nCylinder - nCylinder) + 1);
 
     disk->func = func;
     disk->nSector = nSector;
     disk->nSurface = nSurface;
     disk->nCylinder = nCylinder;
 
-    ts_schedule(disk->task, ulOpTime * TS_MILLISECONDS);
+    ts_schedule(disk->task, ulOpTime * TS_MICROSECONDS);
 
     if(func == RK11_RKCS_FUNC_SEEK)
         return _finishFunction();
@@ -378,7 +363,7 @@ static void _diskTaskCb(void *arg)
         return _finishFunction();
     }
 
-    size_t nDiskWord = ((disk->nCylinder + disk->nSurface) * RK11_RKDA_SECTORS + disk->nSector) * RK11_SECTOR_SIZE_WORDS;
+    size_t nDiskWord = ((disk->nCylinder * RK11_RKDA_SURFACES + disk->nSurface) * RK11_RKDA_SECTORS + disk->nSector) * RK11_SECTOR_SIZE_WORDS;
 
     // Use direct value of RKWC here because apparently it is allowed
     // to change words count of the function while it is running
@@ -412,8 +397,8 @@ static void _diskTaskCb(void *arg)
                 assert(false);
             }
 
-            DEBUG("RK11: Reading %lu words from disk %d, cyl %d surf %d sect %d to memory location %u",
-                  nWordsCount, rk11.currentDrive, disk->nCylinder, disk->nSurface, disk->nSector, addr);
+            DEBUG("RK11: Reading %lu words from disk %d, cyl %d surf %d sect %d [img 0x%lX] to memory location 0%06o",
+                  nWordsCount, rk11.currentDrive, disk->nCylinder, disk->nSurface, disk->nSector, nDiskWord * 2, addr);
 
             for(nWordsDone = 0; nWordsDone < nWordsCount; ++nWordsDone)
             {
@@ -596,19 +581,38 @@ static cpu_word _irqACK(void* arg)
     return RK11_IRQ;
 }
 
-void rk11_init(void)
+bool rk11_init(void)
 {
     memset(&rk11, 0, sizeof(rk11));
 
-    rk11.device = dev_initDevice(RK11_PERIPH_START, RK11_PERIPH_END, &_read, &_write, RK11_IRQ_PRIORITY, &_irqACK, NULL);
+    dev_io_info ioMap[] = {
+        { RK11_PERIPH_START, RK11_PERIPH_END, &_read, &_write, NULL },
+        { 0 }
+    };
+    if(!(rk11.device = dev_initDevice(ioMap, RK11_IRQ_PRIORITY, &_irqACK, NULL)))
+        return false;
 
     for(int i = 0; i < RK05_DISKS_MAX; ++i)
     {
-        rk11.disks[i].task = ts_createTask(&_diskTaskCb, rk11.disks + i);
+        if(!(rk11.disks[i].task = ts_createTask(&_diskTaskCb, rk11.disks + i)))
+        {
+            dev_destroyDevice(rk11.device);
+            rk11.device = NULL;
+
+            for(int j = 0; j < i; ++j)
+            {
+                ts_destroyTask(rk11.disks[j].task);
+                rk11.disks[j].task = NULL;
+            }
+
+            return false;
+        }
         rk11.disks[i].func = RK11_RKCS_FUNC_IDLE;
     }
 
     _controlReset();
+
+    return true;
 }
 
 void rk11_destroy(void)

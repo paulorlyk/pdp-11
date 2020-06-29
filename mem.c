@@ -94,7 +94,7 @@ void mem_register_io(ph_addr ioStart, ph_addr ioEnd, io_rd_cb rd, io_wr_cb wr, v
     ioStart = (ioStart - MEM_UNIBUS_PERIPH_PAGE_ADDR) >> 1;
     ioEnd = (ioEnd - MEM_UNIBUS_PERIPH_PAGE_ADDR) >> 1;
 
-    for(ph_addr i = ioStart; i < ioEnd; ++i)
+    for(ph_addr i = ioStart; i <= ioEnd; ++i)
     {
         assert(mem.peripheralPageMap[i].read == &_ioDummyRead);
         assert(mem.peripheralPageMap[i].write == &_ioDummyWrite);

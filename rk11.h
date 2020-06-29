@@ -13,7 +13,7 @@
 #define RK05_SIZE_WORDS 1247232
 #define RK05_SIZE       (RK05_SIZE_WORDS * MEM_WORD_SIZE)
 
-void rk11_init(void);
+bool rk11_init(void);
 
 void rk11_destroy(void);
 

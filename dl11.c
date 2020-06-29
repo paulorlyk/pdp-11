@@ -288,10 +288,30 @@ DL11 dl11_init(ph_addr baseAddr, cpu_word baseVector, dl11_tx_cb tx)
     pDev->baseVector = baseVector;
     pDev->txCb = tx;
 
-    pDev->device = dev_initDevice(baseAddr, baseAddr + 8, &_read, &_write, DL11_IRQ_PRIORITY, &_irqACK, pDev);
+    dev_io_info ioMap[] = {
+        { baseAddr, baseAddr + 6, &_read, &_write, pDev },
+        { 0 }
+    };
+    if(!(pDev->device = dev_initDevice(ioMap, DL11_IRQ_PRIORITY, &_irqACK, pDev)))
+    {
+        free(pDev);
+        return NULL;
+    }
 
-    pDev->txTask = ts_createTask(_txDone, pDev);
-    pDev->rxTask = ts_createTask(_rxDone, pDev);
+    if(!(pDev->txTask = ts_createTask(_txDone, pDev)))
+    {
+        dev_destroyDevice(pDev->device);
+        free(pDev);
+        return NULL;
+    }
+
+    if(!(pDev->rxTask = ts_createTask(_rxDone, pDev)))
+    {
+        dev_destroyDevice(pDev->device);
+        ts_destroyTask(pDev->txTask);
+        free(pDev);
+        return NULL;
+    }
 
     pDev->regs[DL11_XCSR] = DL11_XCSR_XMIT_RDY;
 

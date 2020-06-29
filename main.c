@@ -69,12 +69,15 @@ int main(void)
         return EXIT_FAILURE;
     dev_registerDevice(dl11_getHandle(dl11));
 
-    rk11_init();
+    if(!rk11_init())
+        return EXIT_FAILURE;
     if(!rk11_loadDisk("img/unix_v5_rk/unix_v5_rk.dsk", 0))
         return EXIT_FAILURE;
     dev_registerDevice(rk11_getHandle());
 
-    cpu_init(bootstrapBase);
+    if(!cpu_init(bootstrapBase))
+        return EXIT_FAILURE;
+    dev_registerDevice(cpu_getHandle());
 
     ts_handle kbdTask = ts_createTask(&kbdTaskCb, dl11);
 
@@ -97,6 +100,7 @@ int main(void)
         //usleep(nSleepMax / TS_MICROSECONDS);
     }
 
+    cpu_destroy();
     dl11_destroy(dl11);
     rk11_destroy();
 

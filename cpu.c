@@ -45,6 +45,8 @@ static struct
 
     bool bDisassemblyOutput;
 
+    device_handle device;
+
     cpu_word GPR[8];
     cpu_word PSW;
 } cpu;
@@ -207,7 +209,7 @@ static cpu_word _read(cpu_addr addr, bool bByte)
 {
     cpu_word data = 0;
 
-    if(!mem_read_physical(addr, &data))
+    if(!mem_read_physical(addr & ~1U, &data))
     {
         // TODO: Trap
         assert(false);
@@ -445,7 +447,7 @@ static void _decode(cpu_word inst, struct _instruction* pInst)
         //DEBUG("Decoder: Double-operand instruction");
 
         pInst->type = _instt_double_op;
-        pInst->opcode = inst & 0x7000;
+        pInst->opcode = inst & 0xF000;
         pInst->srcMode = (inst & 0x0E00) >> 9;
         pInst->src = (inst & 0x01C0) >> 6;
         pInst->dstMode = (inst & 0x0038) >> 3;
@@ -537,7 +539,7 @@ static const char* _formatInstruction(cpu_addr pc, cpu_word instWord, const stru
 {
     static char res[256] = "";
 
-    int pos = sprintf(res, "0%06o: 0%06o\t%s ", pc, instWord, cpu.arrOpcodeNameLUT[pInst->opcode]);
+    int pos = sprintf(res, "%06o: %06o\t%s ", pc, instWord, cpu.arrOpcodeNameLUT[pInst->opcode]);
 
     switch(pInst->type)
     {
@@ -565,7 +567,7 @@ static const char* _formatInstruction(cpu_addr pc, cpu_word instWord, const stru
 
         case _instt_double_op_reg_src:
             pos += sprintf(res + pos, "%s, ", _formatInstructionOperand(pInst->srcMode, pInst->src, &pc));
-            pos += sprintf(res + pos, "%s", cpu.arrRegNameLUT[pInst->dst]);
+            pos += sprintf(res + pos, "%s", cpu.arrRegNameLUT[pInst->reg]);
             break;
     }
 
@@ -761,13 +763,66 @@ static void _initNameLUT(void)
     cpu.arrOpcodeNameLUT[_rts]    = "RTS";
 }
 
-void cpu_init(cpu_word R7)
+static cpu_word _cpuDeviceRead(ph_addr addr, void* arg)
+{
+    cpu_word res = 0;
+
+    switch(addr)
+    {
+        default:
+            // TODO: Trap
+            assert(false);
+            break;
+
+        case 0777572:   // MMR0
+            assert(false);
+            break;
+
+        case 0777574:   // MMR1
+            assert(false);
+            break;
+
+        case 0777576:   // MMR2
+            assert(false);
+            break;
+    }
+
+    return res;
+}
+
+static void _cpuDeviceWrite(ph_addr addr, cpu_word data, void* arg)
+{
+    assert(false);
+}
+
+bool cpu_init(cpu_word R7)
 {
     memset(&cpu, 0, sizeof(cpu));
 
     _initNameLUT();
 
+    dev_io_info ioMap[] = {
+        { 0777572, 0777576, &_cpuDeviceRead, &_cpuDeviceWrite, NULL },  // Memory management registers
+        { 0 }
+    };
+    if(!(cpu.device = dev_initDevice(ioMap, 0, NULL, NULL)))
+        return false;
+
     cpu.GPR[7] = R7;
+
+    return true;
+}
+
+void cpu_destroy(void)
+{
+    dev_deregisterDevice(cpu.device);
+    dev_destroyDevice(cpu.device);
+    cpu.device = NULL;
+}
+
+device_handle cpu_getHandle(void)
+{
+    return cpu.device;
 }
 
 void cpu_run(void)
@@ -863,21 +918,29 @@ void cpu_run(void)
 
         case _add:
         {
-            srcVal = _fetchOperand(inst.srcMode, inst.src, byteFlag, &srcAddr);
-            dstVal = _fetchOperand(inst.dstMode, inst.dst, byteFlag, &dstAddr);
-            int32_t res = srcVal + dstVal;
-            _storeDestResult(inst.dstMode, inst.dst, byteFlag, dstAddr, res);
-            _setFlags(res < 0, !res, CALC_V(srcVal, dstVal, res), res & 0x10000);
+            srcVal = _fetchOperand(inst.srcMode, inst.src, false, &srcAddr);
+            dstVal = _fetchOperand(inst.dstMode, inst.dst, false, &dstAddr);
+            uint32_t res = srcVal + dstVal;
+            _storeDestResult(inst.dstMode, inst.dst, false, dstAddr, res);
+            _setFlags(res & 0x8000, !res, CALC_V(srcVal, dstVal, res), res & 0x10000);
             break;
         }
 
-        case _sub: assert(false);
+        case _sub:
+        {
+            srcVal = _fetchOperand(inst.srcMode, inst.src, false, &srcAddr);
+            dstVal = _fetchOperand(inst.dstMode, inst.dst, false, &dstAddr);
+            uint32_t res = dstVal - srcVal;
+            _storeDestResult(inst.dstMode, inst.dst, false, dstAddr, res);
+            _setFlags(res & 0x8000, !res, CALC_V(srcVal, dstVal, res), res & 0x10000);
+            break;
+        }
 
         case _mul: assert(false);
 
         case _div:
         {
-            srcVal = _fetchOperand(inst.srcMode, inst.src, byteFlag, &srcAddr);
+            srcVal = _fetchOperand(inst.srcMode, inst.src, false, &srcAddr);
             if(srcVal != 0)
             {
                 // Convert to signed integer
@@ -908,7 +971,7 @@ void cpu_run(void)
         case _ash:
         {
             dstVal = cpu.GPR[inst.reg];
-            srcVal = _fetchOperand(inst.srcMode, inst.src, byteFlag, &srcAddr);
+            srcVal = _fetchOperand(inst.srcMode, inst.src, false, &srcAddr);
 
             // The shift bits count ranges from -32 (right shift)
             // to +31 (left shift). Choose 64bit uints here to
@@ -948,7 +1011,14 @@ void cpu_run(void)
 
         case _sob: assert(false);
 
-        case _swab: assert(false);
+        case _swab:
+        {
+            dstVal = _fetchOperand(inst.dstMode, inst.dst, false, &dstAddr);
+            uint32_t res = (dstVal << 8) | (dstVal >> 8);
+            _storeDestResult(inst.dstMode, inst.dst, false, dstAddr, res);
+            _setFlags(res & 0x0080, !(res & 0xFF), 0, 0);
+            break;
+        }
 
         case _clr:
         case _clrb:

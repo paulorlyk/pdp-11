@@ -11,13 +11,10 @@
 
 struct _device
 {
-    ph_addr ioStart;
-    ph_addr ioEnd;
-    io_rd_cb rd;
-    io_wr_cb wr;
-    irq_ack_cb irqACK;
-    void* arg;
+    dev_io_info *ioMap;
     int irqPriority;
+    irq_ack_cb irqACK;
+    void *irqAckCbArg;
     bool bIRQ;
     bool registered;
     struct _device *next;
@@ -52,31 +49,51 @@ void dev_init(void)
     memset(&devices, 0, sizeof(devices));
 }
 
-device_handle dev_initDevice(ph_addr ioStart, ph_addr ioEnd, io_rd_cb rd, io_wr_cb wr, int irqPriority, irq_ack_cb irqACK, void* arg)
+device_handle dev_initDevice(const dev_io_info *ioMap,
+                             int irqPriority,
+                             irq_ack_cb irqACK,
+                             void* irqAckCbArg)
 {
-    assert(ioStart <= ioEnd);
-    assert((ioStart & 1) == 0);
-    assert((ioEnd & 1) == 0);
-    assert(ioStart >= MEM_UNIBUS_PERIPH_PAGE_ADDR);
-    assert(ioEnd >= MEM_UNIBUS_PERIPH_PAGE_ADDR);
-    assert(ioStart <= MEM_UNIBUS_ADDR_MAX);
-    assert(ioEnd <= MEM_UNIBUS_ADDR_MAX);
-    assert(rd);
-    assert(wr);
-    assert(irqPriority >= 0 && irqPriority <= IRQ_PRIORITY_MAX);
-    assert(irqACK);
+    if(irqACK && (irqPriority < 0 || irqPriority > IRQ_PRIORITY_MAX))
+        return NULL;
+
+    int ioMapLen = 0;
+    for(const dev_io_info *cio = ioMap; cio && cio->wr && cio->rd; ++cio, ++ioMapLen)
+    {
+        bool ok = cio->ioStart <= cio->ioEnd;
+        ok |= !(cio->ioStart & 1);
+        ok |= !(cio->ioEnd & 1);
+        ok |= cio->ioStart >= MEM_UNIBUS_PERIPH_PAGE_ADDR;
+        ok |= cio->ioEnd >= MEM_UNIBUS_PERIPH_PAGE_ADDR;
+        ok |= cio->ioStart <= MEM_UNIBUS_ADDR_MAX;
+        ok |= cio->ioEnd <= MEM_UNIBUS_ADDR_MAX;
+        ok |= cio->rd && cio->wr;
+
+        if(!ok)
+            return NULL;
+    }
 
     struct _device *pDev = calloc(1, sizeof(struct _device));
     if(!pDev)
         return NULL;
 
-    pDev->ioStart = ioStart;
-    pDev->ioEnd = ioEnd;
-    pDev->rd = rd;
-    pDev->wr = wr;
+    if(ioMap)
+    {
+        pDev->ioMap = calloc(ioMapLen + 1, sizeof(dev_io_info));
+        if(!pDev->ioMap)
+        {
+            free(pDev);
+            return NULL;
+        }
+
+        // Because pDev->ioMap is already zeroed out, there is no need
+        // to copy last element of the input array
+        memcpy(pDev->ioMap, ioMap, sizeof(dev_io_info) * ioMapLen);
+    }
+
     pDev->irqPriority = irqPriority;
     pDev->irqACK = irqACK;
-    pDev->arg = arg;
+    pDev->irqAckCbArg = irqAckCbArg;
 
     return pDev;
 }
@@ -88,7 +105,12 @@ void dev_destroyDevice(device_handle device)
 
     dev_deregisterDevice(device);
 
-    free(device);
+    struct _device *pDev = (struct _device *)device;
+
+    if(pDev->ioMap)
+        free(pDev->ioMap);
+
+    free(pDev);
 }
 
 void dev_registerDevice(device_handle device)
@@ -109,10 +131,11 @@ void dev_registerDevice(device_handle device)
 
     devices.tail = pDev;
 
-    if(pDev->bIRQ && (!devices.curDevIRQ || devices.curDevIRQ->irqPriority <= pDev->irqPriority))
+    if(pDev->irqACK && pDev->bIRQ && (!devices.curDevIRQ || devices.curDevIRQ->irqPriority <= pDev->irqPriority))
         _updateIRQ();
 
-    mem_register_io(pDev->ioStart, pDev->ioEnd, pDev->rd, pDev->wr, pDev->arg);
+    for(const dev_io_info *cio = pDev->ioMap; cio && cio->wr && cio->rd; ++cio)
+        mem_register_io(cio->ioStart, cio->ioEnd, cio->rd, cio->wr, cio->arg);
 }
 
 void dev_deregisterDevice(device_handle device)
@@ -131,14 +154,17 @@ void dev_deregisterDevice(device_handle device)
     pDev->next = NULL;
     pDev->registered = false;
 
-    mem_deregister_io(pDev->ioStart, pDev->ioEnd);
+    _updateIRQ();
+
+    for(const dev_io_info *cio = pDev->ioMap; cio && cio->wr && cio->rd; ++cio)
+        mem_deregister_io(cio->ioStart, cio->ioEnd);
 }
 
 void dev_setIRQ(device_handle device)
 {
     struct _device *pDev = (struct _device *)device;
 
-    if(!pDev)
+    if(!pDev || !pDev->irqACK)
         return;
 
     pDev->bIRQ = true;
@@ -151,7 +177,7 @@ void dev_clearIRQ(device_handle device)
 {
     struct _device *pDev = (struct _device *)device;
 
-    if(!pDev)
+    if(!pDev || !pDev->irqACK)
         return;
 
     pDev->bIRQ = false;
@@ -172,8 +198,8 @@ cpu_word dev_ackIRQ(device_handle device)
 {
     struct _device *pDev = (struct _device *)device;
 
-    if(!pDev)
+    if(!pDev || !pDev->irqACK)
         return 0;
 
-    return pDev->irqACK(pDev->arg);
+    return pDev->irqACK(pDev->irqAckCbArg);
 }
