@@ -12,11 +12,12 @@
 typedef void* device_handle;
 
 typedef cpu_word (*irq_ack_cb)(void *);
+typedef void (*dev_reset_cb)(void *);
 
 typedef struct
 {
-    ph_addr ioStart;    // First address of I/O region
-    ph_addr ioEnd;      // Last address of I/O region
+    un_addr ioStart;    // First address of I/O region
+    un_addr ioEnd;      // Last address of I/O region
     io_rd_cb rd;
     io_wr_cb wr;
     void* arg;
@@ -39,11 +40,13 @@ void dev_init(void);
 // irqPriority - must be positive and less then IRQ_PRIORITY_MAX.
 // irqACK - IRQ acknowledgment callback, may be NULL if device does not
 //          require any interrupts.
-// irqAckCbArg - argument with which irqACK will be called.
+// devReset - callback for UNIBUS INIT signal. May be NULL.
+// arg - argument with which irqACK and devReset callbacks will be invoked.
 device_handle dev_initDevice(const dev_io_info *ioMap,
                              int irqPriority,
                              irq_ack_cb irqACK,
-                             void* irqAckCbArg);
+                             dev_reset_cb devReset,
+                             void* arg);
 
 void dev_destroyDevice(device_handle device);
 
@@ -54,6 +57,8 @@ void dev_deregisterDevice(device_handle device);
 void dev_setIRQ(device_handle device);
 
 void dev_clearIRQ(device_handle device);
+
+void dev_reset(void);
 
 device_handle dev_getIRQ(int minPriority);
 

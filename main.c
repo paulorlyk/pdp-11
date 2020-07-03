@@ -36,7 +36,7 @@ uint16_t bootstrap[] = {
     0100376,    // bpl .-2
     0005007     // clr pc
 };
-ph_addr bootstrapBase = 0001000;
+cpu_addr bootstrapBase = 0001000;
 
 void terminalRx(char ch)
 {
@@ -49,7 +49,7 @@ void kbdTaskCb(void *arg)
     DL11 dl11 = (DL11)arg;
 
     static const char *msg = "unix\n";
-    static int pos = 0;
+    static size_t pos = 0;
 
     if(pos >= strlen(msg))
         return;

@@ -20,22 +20,56 @@
 #define MEM_SIZE_WORDS  (MEM_16BIT_PERIPH_PAGE_ADDR / MEM_WORD_SIZE)
 #define MEM_SIZE_BYTES  (MEM_SIZE_WORDS * MEM_WORD_SIZE)
 
+// 22 bit physical address
 typedef uint32_t ph_size;
 typedef uint32_t ph_addr;
 
+// 18 bit Unibus address
+typedef uint32_t un_size;
+typedef uint32_t un_addr;
+
+// 16 bit CPU virtual address
 typedef uint16_t cpu_word;
 typedef uint16_t cpu_addr;
 
-typedef cpu_word (* io_rd_cb)(ph_addr, void*);
-typedef void (* io_wr_cb)(ph_addr, cpu_word, void*);
+typedef enum
+{
+    cpu_space_I = 0,
+    cpu_space_D = 1,
+
+    _cpu_space_max
+} cpu_space;
+
+typedef enum
+{
+    cpu_mode_Kernel = 0,
+    cpu_mode_Supervisor = 1,
+    cpu_mode_Invalid = 2,
+    cpu_mode_User = 3,
+
+    _cpu_mode_max
+} cpu_mode;
+
+typedef cpu_word (* io_rd_cb)(un_addr, void*);
+typedef void (* io_wr_cb)(un_addr, cpu_word, void*);
 
 void mem_init(ph_addr base, const uint8_t* buf, ph_size size);
 
-void mem_register_io(ph_addr ioStart, ph_addr ioEnd, io_rd_cb rd, io_wr_cb wr, void* arg);
+void mem_registerUnibusIO(un_addr ioStart, un_addr ioEnd, io_rd_cb rd, io_wr_cb wr, void* arg);
+void mem_deregisterUnibusIO(un_addr ioStart, un_addr ioEnd);
 
-void mem_deregister_io(ph_addr ioStart, ph_addr ioEnd);
+bool mem_readUnibus(un_addr addr, cpu_word* data);
+bool mem_writeUnibus(un_addr addr, bool bByte, cpu_word data);
 
-bool mem_read_physical(ph_addr addr, cpu_word* data);
-bool mem_write_physical(ph_addr addr, bool bByte, cpu_word data);
+bool mem_read(cpu_addr addr, cpu_space s, cpu_mode m, cpu_word* data);
+bool mem_write(cpu_addr addr, cpu_space s, cpu_mode m, bool bByte, cpu_word data);
+
+void mem_mmu_reset(void);
+// TODO: Set to false when in T bit, Parity, Odd Address, and Time Out traps and interrupts
+//  Note that EMT, TRAP, BPT, and lOT do not set this to true.
+void mem_updateMMR0(bool bInstCompleted);
+void mem_resetMMR1(void);
+void mem_updateMMR1(int reg, int diff);
+void mem_updateMMR2(cpu_word val);
 
 #endif //MEM_H_FA19B89AB9CD44F9B591AA96AC60CD93

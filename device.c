@@ -14,7 +14,8 @@ struct _device
     dev_io_info *ioMap;
     int irqPriority;
     irq_ack_cb irqACK;
-    void *irqAckCbArg;
+    dev_reset_cb devReset;
+    void *arg;
     bool bIRQ;
     bool registered;
     struct _device *next;
@@ -52,7 +53,8 @@ void dev_init(void)
 device_handle dev_initDevice(const dev_io_info *ioMap,
                              int irqPriority,
                              irq_ack_cb irqACK,
-                             void* irqAckCbArg)
+                             dev_reset_cb devReset,
+                             void* arg)
 {
     if(irqACK && (irqPriority < 0 || irqPriority > IRQ_PRIORITY_MAX))
         return NULL;
@@ -93,7 +95,8 @@ device_handle dev_initDevice(const dev_io_info *ioMap,
 
     pDev->irqPriority = irqPriority;
     pDev->irqACK = irqACK;
-    pDev->irqAckCbArg = irqAckCbArg;
+    pDev->devReset = devReset;
+    pDev->arg = arg;
 
     return pDev;
 }
@@ -135,7 +138,7 @@ void dev_registerDevice(device_handle device)
         _updateIRQ();
 
     for(const dev_io_info *cio = pDev->ioMap; cio && cio->wr && cio->rd; ++cio)
-        mem_register_io(cio->ioStart, cio->ioEnd, cio->rd, cio->wr, cio->arg);
+        mem_registerUnibusIO(cio->ioStart, cio->ioEnd, cio->rd, cio->wr, cio->arg);
 }
 
 void dev_deregisterDevice(device_handle device)
@@ -157,7 +160,7 @@ void dev_deregisterDevice(device_handle device)
     _updateIRQ();
 
     for(const dev_io_info *cio = pDev->ioMap; cio && cio->wr && cio->rd; ++cio)
-        mem_deregister_io(cio->ioStart, cio->ioEnd);
+        mem_deregisterUnibusIO(cio->ioStart, cio->ioEnd);
 }
 
 void dev_setIRQ(device_handle device)
@@ -186,6 +189,15 @@ void dev_clearIRQ(device_handle device)
         _updateIRQ();
 }
 
+void dev_reset(void)
+{
+    for(struct _device *it = devices.head; it; it = it->next)
+    {
+        if(it->devReset)
+            it->devReset(it->arg);
+    }
+}
+
 device_handle dev_getIRQ(int minPriority)
 {
     if(devices.curDevIRQ && devices.curDevIRQ->irqPriority >= minPriority)
@@ -201,5 +213,5 @@ cpu_word dev_ackIRQ(device_handle device)
     if(!pDev || !pDev->irqACK)
         return 0;
 
-    return pDev->irqACK(pDev->irqAckCbArg);
+    return pDev->irqACK(pDev->arg);
 }

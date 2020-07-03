@@ -14,7 +14,7 @@ typedef void (* dl11_tx_cb)(char ch);
 // baseAddr must be aligned to CPU word size.
 // baseVector can't have any of it's first 3 bits set.
 // tx callback must not be NULL.
-DL11 dl11_init(ph_addr baseAddr, cpu_word baseVector, dl11_tx_cb tx);
+DL11 dl11_init(un_addr baseAddr, cpu_word baseVector, dl11_tx_cb tx);
 
 void dl11_destroy(DL11 dev);
 

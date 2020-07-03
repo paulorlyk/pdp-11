@@ -124,13 +124,13 @@ enum _opcode
     _jmp        = 0x0040,   // JMP      Jump
     _jsr        = 0x0800,   // JSR      Jump to Subroutine
     _rts        = 0x0080,   // RTS      Return from Subroutine
+    _reset      = 0x0005,   // RESET    Sends INIT on the UNIBUS for 10ms
 
     // 000000   HALT     Halt
     // 000001   WAIT     Wait for Interrupt
     // 000002   RTI      Return from Interrupt
     // 000003   BPT      Breakpoint Trap
     // 000004   IOT      I/O Trap
-    // 000005   RESET    Sends INIT on the UNIBUS for 10ms.
     // 000006   RTT      Return from Interrupt
     // 000007   MFPT     Move From Processor (PDP-11/44 ONLY)
 
@@ -185,7 +185,8 @@ enum _instructionType
     _instt_double_op,
     _instt_branch,
     _instt_rts,
-    _instt_double_op_reg_src
+    _instt_double_op_reg_src,
+    _instt_system
 };
 
 struct _instruction
@@ -209,7 +210,7 @@ static cpu_word _read(cpu_addr addr, bool bByte)
 {
     cpu_word data = 0;
 
-    if(!mem_read_physical(addr & ~1U, &data))
+    if(!mem_read(addr & ~1U, cpu_space_I, cpu_mode_Kernel, &data))
     {
         // TODO: Trap
         assert(false);
@@ -226,7 +227,7 @@ static void _write(cpu_addr addr, bool bByte, cpu_word data)
 //    if(bByte)
 //        data &= 0xFF;
 
-    if(!mem_write_physical(addr, bByte, data))
+    if(!mem_write(addr, cpu_space_I, cpu_mode_Kernel, bByte, data))
     {
         // TODO: Trap
         assert(false);
@@ -358,12 +359,14 @@ static void _decode(cpu_word inst, struct _instruction* pInst)
                     pInst->opcode = inst & 0xFFF8;
                     pInst->dst = (inst & 0x0007) >> 0;
                 }
-                else
+                else    // 0000 0000 0000 0xxx
                 {
                     // System instructions
 
-                    DEBUG("UNKNOWN INSTRUCTION: 0%06o", inst);
-                    assert(false);
+                    //DEBUG("Decoder: System instruction");
+
+                    pInst->type = _instt_system;
+                    pInst->opcode = inst;
                 }
             }
             else    // B000 0III xxxx xxxx; B != 0 && III != 0
@@ -423,6 +426,7 @@ static void _decode(cpu_word inst, struct _instruction* pInst)
             pInst->reg = (inst & 0x01C0) >> 6;
             pInst->srcMode = (inst & 0x0038) >> 3;
             pInst->src = (inst & 0x0007) >> 0;
+            pInst->offset = -((int)((inst & 0x003F) >> 0));
         }
         else    // 1111 xxxx xxxx xxxx
         {
@@ -478,7 +482,8 @@ static const char* _formatInstructionOperand(enum _addressingMode mode, int reg,
             case _auto_inc: // PC Immediate
             {
                 cpu_word data = 0;
-                if(!mem_read_physical(*pc += 2, &data))
+                // TODO: MMU support
+                if(!mem_readUnibus(*pc += 2, &data))
                     pos += sprintf(res + pos, "#?");
                 else
                     pos += sprintf(res + pos, "#%06o", data);
@@ -489,7 +494,8 @@ static const char* _formatInstructionOperand(enum _addressingMode mode, int reg,
             case _auto_inc_deferred: // PC Absolute
             {
                 cpu_word data = 0;
-                if(!mem_read_physical(*pc += 2, &data))
+                // TODO: MMU support
+                if(!mem_readUnibus(*pc += 2, &data))
                     pos += sprintf(res + pos, "@#?");
                 else
                     pos += sprintf(res + pos, "@#%06o", data);
@@ -507,7 +513,8 @@ static const char* _formatInstructionOperand(enum _addressingMode mode, int reg,
         case _index:
         {
             cpu_word data = 0;
-            if(!mem_read_physical(*pc += 2, &data))
+            // TODO: MMU support
+            if(!mem_readUnibus(*pc += 2, &data))
                 pos += sprintf(res + pos, "X(%s)", cpu.arrRegNameLUT[reg]);
             else
                 pos += sprintf(res + pos, "#%06o(%s)", data, cpu.arrRegNameLUT[reg]);
@@ -518,7 +525,8 @@ static const char* _formatInstructionOperand(enum _addressingMode mode, int reg,
         case _index_deferred:
         {
             cpu_word data = 0;
-            if(!mem_read_physical(*pc += 2, &data))
+            // TODO: MMU support
+            if(!mem_readUnibus(*pc += 2, &data))
                 pos += sprintf(res + pos, "@X(%s)", cpu.arrRegNameLUT[reg]);
             else
                 pos += sprintf(res + pos, "@#%06o(%s)", data, cpu.arrRegNameLUT[reg]);
@@ -539,35 +547,38 @@ static const char* _formatInstruction(cpu_addr pc, cpu_word instWord, const stru
 {
     static char res[256] = "";
 
-    int pos = sprintf(res, "%06o: %06o\t%s ", pc, instWord, cpu.arrOpcodeNameLUT[pInst->opcode]);
+    int pos = sprintf(res, "%06o: %06o\t%s", pc, instWord, cpu.arrOpcodeNameLUT[pInst->opcode]);
 
     switch(pInst->type)
     {
         default:
         case _instt_unknown:
-            pos += sprintf(res + pos, "?");
+            pos += sprintf(res + pos, " ?");
             break;
 
         case _instt_single_op:
-            pos += sprintf(res + pos, "%s", _formatInstructionOperand(pInst->dstMode, pInst->dst, &pc));
+            pos += sprintf(res + pos, " %s", _formatInstructionOperand(pInst->dstMode, pInst->dst, &pc));
             break;
 
         case _instt_double_op:
-            pos += sprintf(res + pos, "%s, ", _formatInstructionOperand(pInst->srcMode, pInst->src, &pc));
-            pos += sprintf(res + pos, "%s", _formatInstructionOperand(pInst->dstMode, pInst->dst, &pc));
+            pos += sprintf(res + pos, " %s", _formatInstructionOperand(pInst->srcMode, pInst->src, &pc));
+            pos += sprintf(res + pos, ", %s", _formatInstructionOperand(pInst->dstMode, pInst->dst, &pc));
             break;
 
         case _instt_branch:
-            pos += sprintf(res + pos, ".%+d", pInst->offset);
+            pos += sprintf(res + pos, " .%+d", pInst->offset);
             break;
 
         case _instt_rts:
-            pos += sprintf(res + pos, "%s", cpu.arrRegNameLUT[pInst->dst]);
+            pos += sprintf(res + pos, " %s", cpu.arrRegNameLUT[pInst->dst]);
             break;
 
         case _instt_double_op_reg_src:
-            pos += sprintf(res + pos, "%s, ", _formatInstructionOperand(pInst->srcMode, pInst->src, &pc));
-            pos += sprintf(res + pos, "%s", cpu.arrRegNameLUT[pInst->reg]);
+            pos += sprintf(res + pos, " %s", _formatInstructionOperand(pInst->srcMode, pInst->src, &pc));
+            pos += sprintf(res + pos, ", %s", cpu.arrRegNameLUT[pInst->reg]);
+            break;
+
+        case _instt_system:
             break;
     }
 
@@ -580,6 +591,8 @@ static bool _calculateOperandAddress(enum _addressingMode mode, int reg, bool bB
     assert(reg >= 0 && reg < 8);
 
     cpu_word *pRn = cpu.GPR + reg;
+
+    int nRnDiff = 0;
 
     switch(mode)
     {
@@ -594,21 +607,21 @@ static bool _calculateOperandAddress(enum _addressingMode mode, int reg, bool bB
 
         case _auto_inc:
             *pAddr = *pRn;
-            *pRn += 1 + !bByte;
+            *pRn += nRnDiff = 1 + !bByte;
             break;
 
         case _auto_inc_deferred:
             *pAddr = _read(*pRn, false);
-            *pRn += 2;
+            *pRn += nRnDiff = 2;
             break;
 
         case _auto_dec:
-            *pRn -= 1 + !bByte;
+            *pRn += nRnDiff = -(1 + !bByte);
             *pAddr = *pRn;
             break;
 
         case _auto_dec_deferred:
-            *pRn -= 1 + !bByte;
+            *pRn += nRnDiff = -(1 + !bByte);
             *pAddr = _read(*pRn, false);
             break;
 
@@ -630,6 +643,8 @@ static bool _calculateOperandAddress(enum _addressingMode mode, int reg, bool bB
             break;
         }
     }
+
+    mem_updateMMR1(reg, nRnDiff);
 
     return true;
 }
@@ -687,7 +702,7 @@ static void _initNameLUT(void)
     cpu.arrAddrModeSuffixLUT[_index]                = ")";
     cpu.arrAddrModeSuffixLUT[_index_deferred]       = ")";
 
-    for(int i = 0; i < sizeof(cpu.arrOpcodeNameLUT) / sizeof(cpu.arrOpcodeNameLUT[0]); ++i)
+    for(size_t i = 0; i < sizeof(cpu.arrOpcodeNameLUT) / sizeof(cpu.arrOpcodeNameLUT[0]); ++i)
         cpu.arrOpcodeNameLUT[i] = "???";
 
     cpu.arrOpcodeNameLUT[_mov]    = "MOV";
@@ -761,11 +776,12 @@ static void _initNameLUT(void)
     cpu.arrOpcodeNameLUT[_jmp]    = "JMP";
     cpu.arrOpcodeNameLUT[_jsr]    = "JSR";
     cpu.arrOpcodeNameLUT[_rts]    = "RTS";
+    cpu.arrOpcodeNameLUT[_reset]  = "RESET";
 }
 
-static cpu_word _cpuDeviceRead(ph_addr addr, void* arg)
+static cpu_word _cpuDeviceRead(un_addr addr, void* arg)
 {
-    cpu_word res = 0;
+    (void)arg;
 
     switch(addr)
     {
@@ -774,25 +790,29 @@ static cpu_word _cpuDeviceRead(ph_addr addr, void* arg)
             assert(false);
             break;
 
-        case 0777572:   // MMR0
-            assert(false);
-            break;
-
-        case 0777574:   // MMR1
-            assert(false);
-            break;
-
-        case 0777576:   // MMR2
+        case 0777776:   // PS
             assert(false);
             break;
     }
 
-    return res;
+    return 0;
 }
 
-static void _cpuDeviceWrite(ph_addr addr, cpu_word data, void* arg)
+static void _cpuDeviceWrite(un_addr addr, cpu_word data, void* arg)
 {
-    assert(false);
+    (void)arg;
+
+    switch(addr)
+    {
+        default:
+            // TODO: Trap
+            assert(false);
+            break;
+
+        case 0777776:   // PS
+            assert(false);
+            break;
+    }
 }
 
 bool cpu_init(cpu_word R7)
@@ -802,10 +822,10 @@ bool cpu_init(cpu_word R7)
     _initNameLUT();
 
     dev_io_info ioMap[] = {
-        { 0777572, 0777576, &_cpuDeviceRead, &_cpuDeviceWrite, NULL },  // Memory management registers
+        { 0777776, 0777776, &_cpuDeviceRead, &_cpuDeviceWrite, NULL },
         { 0 }
     };
-    if(!(cpu.device = dev_initDevice(ioMap, 0, NULL, NULL)))
+    if(!(cpu.device = dev_initDevice(ioMap, 0, NULL, NULL, NULL)))
         return false;
 
     cpu.GPR[7] = R7;
@@ -828,10 +848,26 @@ device_handle cpu_getHandle(void)
 void cpu_run(void)
 {
     // TODO: Debug
-    //if(cpu.GPR[7] >= 0137000)
-    //{
-    //    cpu.bDisassemblyOutput = true;
-    //}
+    if(cpu.GPR[7] == 0137176)
+    {
+        //cpu.bDisassemblyOutput = true;
+    }
+
+    // MMR1 records any auto increment/decrement of the general purpose
+    // registers, including explicit references through the PC. MMR1 is
+    // cleared at the beginning of each instruction fetch. Whenever a general
+    // purpose register is either autoincremented or autodecremented, the
+    // register number and the amount by which the register was modified
+    // (in 2's complement notation) is written into MMR1.
+    mem_resetMMR1();
+
+    // TODO: Update MMR2 on traps and interrupts also
+    // MMR2 is loaded with the 16-bit Virtual Address (VA) at the beginning
+    // of each instruction fetch, or with the address Trap Vector at the
+    // beginning of an interrupt, T Bit trap, Parity, Odd Address, and Timeout
+    //aborts and parity traps. Note that MMR2 does not get the Trap Vector
+    //on EMT, TRAP, BPT and lOT instructions.
+    mem_updateMMR2(cpu.GPR[7]);
 
     cpu_word instWord = _fetchPC();
     //DEBUG("Instruction fetch: 0%06o: 0%06o", cpu.GPR[7] - 2, instWord);
@@ -844,7 +880,7 @@ void cpu_run(void)
         DEBUG("%s", _formatInstruction(cpu.GPR[7] - 2, instWord, &inst));
 
         // TODO: Debug
-        //int dbg = 0;
+        int dbg = 0;
     }
 
     // TODO: 3 word instruction
@@ -1009,7 +1045,12 @@ void cpu_run(void)
 
         case _sys: assert(false);
 
-        case _sob: assert(false);
+        case _sob:
+        {
+            --cpu.GPR[inst.reg];
+            BRANCH_IF(cpu.GPR[inst.reg], inst.offset);
+            break;
+        }
 
         case _swab:
         {
@@ -1037,7 +1078,7 @@ void cpu_run(void)
         {
             dstVal = _fetchOperand(inst.dstMode, inst.dst, byteFlag, &dstAddr);
             ++dstVal;
-            _setFlags(dstVal < 0, !dstVal, dstVal == 0x8000, PSW_GET_C(cpu.PSW));
+            _setFlags(dstVal & 0x8000, !dstVal, dstVal == 0x8000, PSW_GET_C(cpu.PSW));
             _storeDestResult(inst.dstMode, inst.dst, byteFlag, dstAddr, dstVal);
             break;
         }
@@ -1153,6 +1194,13 @@ void cpu_run(void)
         {
             cpu.GPR[7] = cpu.GPR[inst.dst];
             POP_STACK(cpu.GPR[inst.dst]);
+            break;
+        }
+
+        case _reset:
+        {
+            mem_mmu_reset();
+            dev_reset();
             break;
         }
 

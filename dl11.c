@@ -91,7 +91,7 @@
 
 struct _dl11
 {
-    ph_addr baseAddr;
+    un_addr baseAddr;
     cpu_word baseVector;
     dl11_tx_cb txCb;
     device_handle device;
@@ -143,7 +143,7 @@ static void _runTransmitter(struct _dl11 *pDev)
     _updateInterrupts(pDev);
 }
 
-static cpu_word _read(ph_addr addr, void* arg)
+static cpu_word _read(un_addr addr, void* arg)
 {
     assert(arg);
     struct _dl11 *pDev = (struct _dl11 *)arg;
@@ -174,7 +174,7 @@ static cpu_word _read(ph_addr addr, void* arg)
     return res;
 }
 
-static void _write(ph_addr addr, cpu_word data, void* arg)
+static void _write(un_addr addr, cpu_word data, void* arg)
 {
     assert(arg);
     struct _dl11 *pDev = (struct _dl11 *)arg;
@@ -238,6 +238,23 @@ static cpu_word _irqACK(void* arg)
     return pDev->baseVector;
 }
 
+static void _devReset(void* arg)
+{
+    assert(arg);
+    struct _dl11 *pDev = (struct _dl11 *)arg;
+
+    memset(pDev->regs, 0, sizeof(pDev->regs));
+
+    pDev->regs[DL11_XCSR] = DL11_XCSR_XMIT_RDY;
+
+    ts_cancel(pDev->txTask);
+    ts_cancel(pDev->rxTask);
+
+    pDev->bTxPending = false;
+
+    _updateInterrupts(pDev);
+}
+
 static void _txDone(void* arg)
 {
     assert(arg);
@@ -277,7 +294,7 @@ static void _rxDone(void* arg)
     _updateInterrupts(pDev);
 }
 
-DL11 dl11_init(ph_addr baseAddr, cpu_word baseVector, dl11_tx_cb tx)
+DL11 dl11_init(un_addr baseAddr, cpu_word baseVector, dl11_tx_cb tx)
 {
     if((baseAddr & 1) || (baseVector & 7) || !tx)
         return NULL;
@@ -292,7 +309,7 @@ DL11 dl11_init(ph_addr baseAddr, cpu_word baseVector, dl11_tx_cb tx)
         { baseAddr, baseAddr + 6, &_read, &_write, pDev },
         { 0 }
     };
-    if(!(pDev->device = dev_initDevice(ioMap, DL11_IRQ_PRIORITY, &_irqACK, pDev)))
+    if(!(pDev->device = dev_initDevice(ioMap, DL11_IRQ_PRIORITY, &_irqACK, &_devReset, pDev)))
     {
         free(pDev);
         return NULL;
@@ -313,9 +330,7 @@ DL11 dl11_init(ph_addr baseAddr, cpu_word baseVector, dl11_tx_cb tx)
         return NULL;
     }
 
-    pDev->regs[DL11_XCSR] = DL11_XCSR_XMIT_RDY;
-
-    _updateInterrupts(pDev);
+    _devReset(pDev);
 
     return pDev;
 }

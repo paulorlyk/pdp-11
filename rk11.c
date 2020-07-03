@@ -217,7 +217,6 @@ static void _controlReset(void)
 
         rk11.disks[i].bINT = false;
         rk11.disks[i].func = RK11_RKCS_FUNC_IDLE;
-        rk11.disks[i].writeProtect = false; // TODO: Does it really resets write protect?
     }
 
     memset(rk11.regs, 0, sizeof(rk11.regs));
@@ -256,7 +255,8 @@ static void _runFunction(void)
     if(func == RK11_RKCS_FUNC_CONTROL_RESET)
     {
         _controlReset();
-        return _finishFunction();
+        _finishFunction();
+        return;
     }
 
     // TODO: Implement format
@@ -271,25 +271,29 @@ static void _runFunction(void)
     if(!disk->bConnected)
     {
         rk11.regs[RK11_RKER] |= RK11_RKER_NXD;
-        return _finishFunction();
+        _finishFunction();
+        return;
     }
 
     if(!disk->img || disk->func >= 0)
     {
         rk11.regs[RK11_RKER] |= RK11_RKER_DRE;
-        return _finishFunction();
+        _finishFunction();
+        return;
     }
 
     if(func == RK11_RKCS_FUNC_WRITE_LOCK)
     {
         disk->writeProtect = true;
-        return _finishFunction();
+        _finishFunction();
+        return;
     }
 
     if((rk11.regs[RK11_RKCS] & RK11_RKCS_FMT) && func != RK11_RKCS_FUNC_READ && func != RK11_RKCS_FUNC_WRITE)
     {
         rk11.regs[RK11_RKER] |= RK11_RKER_PGE;
-        return _finishFunction();
+        _finishFunction();
+        return;
     }
 
     int nSector = 0;
@@ -301,7 +305,8 @@ static void _runFunction(void)
         if(nSector >= RK11_RKDA_SECTORS)
         {
             rk11.regs[RK11_RKER] |= RK11_RKER_NXS;
-            return _finishFunction();
+            _finishFunction();
+            return;
         }
 
         nSurface = RK11_RKDA_GET_SURFACE(rk11.regs[RK11_RKDA]);
@@ -310,7 +315,8 @@ static void _runFunction(void)
         if(nCylinder >= RK11_RKDA_CYLINDERS)
         {
             rk11.regs[RK11_RKER] |= RK11_RKER_NXC;
-            return _finishFunction();
+            _finishFunction();
+            return;
         }
     }
     else
@@ -322,7 +328,8 @@ static void _runFunction(void)
     if(func == RK11_RKCS_FUNC_WRITE && disk->writeProtect)
     {
         rk11.regs[RK11_RKER] |= RK11_RKER_WLO;
-        return _finishFunction();
+        _finishFunction();
+        return;
     }
 
     unsigned long int ulOpTime = RK11_CYL_SEEK_TIME_US * (abs(disk->nCylinder - nCylinder) + 1);
@@ -335,7 +342,7 @@ static void _runFunction(void)
     ts_schedule(disk->task, ulOpTime * TS_MICROSECONDS);
 
     if(func == RK11_RKCS_FUNC_SEEK)
-        return _finishFunction();
+        _finishFunction();
 }
 
 static void _diskTaskCb(void *arg)
@@ -360,7 +367,8 @@ static void _diskTaskCb(void *arg)
     if(!disk->bConnected || !disk->img)
     {
         rk11.regs[RK11_RKER] |= RK11_RKER_DRE;
-        return _finishFunction();
+        _finishFunction();
+        return;
     }
 
     size_t nDiskWord = ((disk->nCylinder * RK11_RKDA_SURFACES + disk->nSurface) * RK11_RKDA_SECTORS + disk->nSector) * RK11_SECTOR_SIZE_WORDS;
@@ -375,7 +383,7 @@ static void _diskTaskCb(void *arg)
         rk11.regs[RK11_RKER] |= RK11_RKER_OVR;
     }
 
-    ph_addr addr = rk11.regs[RK11_RKBA] | (RK11_RKCS_GET_MEX(rk11.regs[RK11_RKCS]) << 16);
+    un_addr addr = rk11.regs[RK11_RKBA] | (RK11_RKCS_GET_MEX(rk11.regs[RK11_RKCS]) << 16);
     cpu_word *data = ((cpu_word *)disk->img) + nDiskWord;
     size_t nWordsDone = 0;
 
@@ -402,7 +410,7 @@ static void _diskTaskCb(void *arg)
 
             for(nWordsDone = 0; nWordsDone < nWordsCount; ++nWordsDone)
             {
-                if(!mem_write_physical(addr, false, *data++))
+                if(!mem_writeUnibus(addr, false, *data++))
                 {
                     rk11.regs[RK11_RKER] |= RK11_RKER_NXM;
                     break;
@@ -468,7 +476,7 @@ static void _unloadDisk(int n)
     _updateInterrupts();
 }
 
-static cpu_word _read(ph_addr addr, void* arg)
+static cpu_word _read(un_addr addr, void* arg)
 {
     assert(addr >= RK11_PERIPH_START);
     assert(addr < RK11_PERIPH_END);
@@ -509,7 +517,7 @@ static cpu_word _read(ph_addr addr, void* arg)
     return rk11.regs[reg];
 }
 
-static void _write(ph_addr addr, cpu_word data, void* arg)
+static void _write(un_addr addr, cpu_word data, void* arg)
 {
     assert(addr >= RK11_PERIPH_START);
     assert(addr < RK11_PERIPH_END);
@@ -581,6 +589,16 @@ static cpu_word _irqACK(void* arg)
     return RK11_IRQ;
 }
 
+static void _devReset(void* arg)
+{
+    (void)arg;
+
+    for(int i = 0; i < RK05_DISKS_MAX; ++i)
+        rk11.disks[i].writeProtect = false;
+
+    _controlReset();
+}
+
 bool rk11_init(void)
 {
     memset(&rk11, 0, sizeof(rk11));
@@ -589,7 +607,7 @@ bool rk11_init(void)
         { RK11_PERIPH_START, RK11_PERIPH_END, &_read, &_write, NULL },
         { 0 }
     };
-    if(!(rk11.device = dev_initDevice(ioMap, RK11_IRQ_PRIORITY, &_irqACK, NULL)))
+    if(!(rk11.device = dev_initDevice(ioMap, RK11_IRQ_PRIORITY, &_irqACK, &_devReset, NULL)))
         return false;
 
     for(int i = 0; i < RK05_DISKS_MAX; ++i)
@@ -610,7 +628,7 @@ bool rk11_init(void)
         rk11.disks[i].func = RK11_RKCS_FUNC_IDLE;
     }
 
-    _controlReset();
+    _devReset(NULL);
 
     return true;
 }
