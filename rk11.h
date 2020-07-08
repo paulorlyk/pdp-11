@@ -9,6 +9,8 @@
 
 #include <stdbool.h>
 
+#define CONFIG_RK11_NO_DELAYS   1
+
 #define RK05_DISKS_MAX  8
 #define RK05_SIZE_WORDS 1247232
 #define RK05_SIZE       (RK05_SIZE_WORDS * MEM_WORD_SIZE)

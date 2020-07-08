@@ -10,7 +10,7 @@
 #include <stdint.h>
 
 #define GET_BIT_FIELD(word, mask, offset) (((word) & (mask)) >> (offset))
-#define SET_BIT_FIELD(word, val, mask, offset) ((word) = ((word) & ~(mask)) | (((val) << (offset)) & (mask)))
+#define SET_BIT_FIELD(word, val, mask, offset) (((word) & ~(mask)) | (((val) << (offset)) & (mask)))
 
 // Current processor mode
 // Allowed values: 0, 1, 3
@@ -78,6 +78,8 @@
 #define PSW_C_OFFSET 0
 #define PSW_GET_C(psw) GET_BIT_FIELD((psw), PSW_C_MASK, PSW_C_OFFSET)
 #define PSW_SET_C(psw, val) SET_BIT_FIELD((psw), (val), PSW_C_MASK, PSW_C_OFFSET)
+
+#define PSW_MASK 0xF8FF;
 
 bool cpu_init(cpu_word R7);
 

@@ -31,7 +31,7 @@ void dev_init(void);
 //          - ioStart <= ioEnd
 //          - (ioStart & 1) == 0
 //          - (ioEnd & 1) == 0
-//          - ioStart >= MEM_UNIBUS_PERIPH_PAGE_ADDR
+//          - ioStart > MEM_UNIBUS_PERIPH_PAGE_ADDR
 //          - ioEnd >= MEM_UNIBUS_PERIPH_PAGE_ADDR
 //          - ioStart <= MEM_UNIBUS_ADDR_MAX
 //          - ioEnd <= MEM_UNIBUS_ADDR_MAX

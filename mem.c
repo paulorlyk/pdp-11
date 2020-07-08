@@ -105,31 +105,14 @@ static struct _mmuGegGroupInfo
     { 0772360, 0772376, mem.mmu.PAR[cpu_mode_Kernel][cpu_space_D] },        // _mmu_rgrp_KDSAR
 };
 
-static cpu_word _ioDummyRead(un_addr addr, void* arg)
-{
-    (void)arg;
-
-    // TODO: Trap
-    DEBUG("UNIBUS: Reading unknown periphery page address: 0%08o", addr);
-    assert(false);
-    return 0;
-}
-
-static void _ioDummyWrite(un_addr addr, cpu_word data, void* arg)
-{
-    (void)arg;
-
-    // TODO: Trap
-    DEBUG("UNIBUS: Writing unknown periphery page address: 0%08o, data: 0%06o", addr, data);
-    assert(false);
-}
-
 static cpu_word _mmuRegRead(un_addr addr, void* arg)
 {
     struct _mmuGegGroupInfo *pRG = (struct _mmuGegGroupInfo *)arg;
 
     assert(addr >= pRG->ioStart && addr <= pRG->ioEnd);
     assert(!(addr & 1));
+
+    //DEBUG("MMU: Reg RD");
 
     return pRG->base[(addr - pRG->ioStart) >> 1];
 }
@@ -141,6 +124,8 @@ static void _mmuRegWrite(un_addr addr, cpu_word data, void* arg)
     assert(addr >= pRG->ioStart && addr <= pRG->ioEnd);
     assert(!(addr & 1));
 
+    //DEBUG("MMU: Reg WR");
+
     pRG->base[(addr - pRG->ioStart) >> 1] = data;
 }
 
@@ -148,15 +133,8 @@ static cpu_word _mmuRead(un_addr addr, void* arg)
 {
     (void)arg;
 
-    cpu_word res = 0;
-
     switch(addr)
     {
-        default:
-            // TODO: Trap
-            assert(false);
-            break;
-
         case 0777572:   // MMR0
             return mem.mmu.MMR[0];
 
@@ -170,6 +148,7 @@ static cpu_word _mmuRead(un_addr addr, void* arg)
             return mem.mmu.MMR[3];
     }
 
+    assert(false);
     return 0;
 }
 
@@ -180,7 +159,6 @@ static void _mmuWrite(un_addr addr, cpu_word data, void* arg)
     switch(addr)
     {
         default:
-            // TODO: Trap
             assert(false);
             break;
 
@@ -197,6 +175,8 @@ static void _mmuWrite(un_addr addr, cpu_word data, void* arg)
             break;
 
         case 0772516:   // MMR3
+            assert(!(data & MMU_MMR3_22BIT_MAP));   // TODO: Implement
+            assert(!(data & MMU_MMR3_UB_MAP_REL));  // TODO: Implement
             mem.mmu.MMR[3] = data & MMU_MMR3_WR_MASK;
             break;
     }
@@ -211,23 +191,7 @@ static struct _periph_io* _getPeriphIO(un_addr addr)
     return mem.peripheralPageMap + idx;
 }
 
-static cpu_word _readIOPage(un_addr addr)
-{
-    //DEBUG("UNIBUS: I/O read: 0%06o", addr);
-
-    struct _periph_io* pio = _getPeriphIO(addr);
-    return pio->read(addr, pio->arg);
-}
-
-static void _writeIOPage(un_addr addr, cpu_word data)
-{
-    //DEBUG("UNIBUS: I/O write: 0%06o -> addr 0%06o", data, addr);
-
-    struct _periph_io* pio = _getPeriphIO(addr);
-    pio->write(addr, data, pio->arg);
-}
-
-static ph_addr _mmuMap(cpu_addr addr, cpu_space s, cpu_mode m)
+static uint32_t _mmuMap(cpu_addr addr, cpu_space s, cpu_mode m, bool bWR)
 {
     assert(s < _cpu_space_max);
     assert(m < _cpu_mode_max);
@@ -236,51 +200,83 @@ static ph_addr _mmuMap(cpu_addr addr, cpu_space s, cpu_mode m)
     {
         // Memory Management Unit is inoperative and addresses are not
         // relocated or protected.
-        return addr;
+
+        ph_addr PA = addr;
+        if(addr >= MEM_16BIT_PERIPH_PAGE_ADDR)
+        {
+            PA -= MEM_16BIT_PERIPH_PAGE_ADDR;
+            PA += MEM_UNIBUS_PERIPH_PAGE_ADDR + MEM_22BIT_UNIBUS_ADDR;
+        }
+
+        return PA;
     }
 
-    // TODO: Check if MMU is enabled
+    if(m == cpu_mode_Invalid)
+    {
+        // TODO: Trap
+        assert(false);
+    }
+
+    if(   (m == cpu_mode_Kernel && !(mem.mmu.MMR[3] & MMU_MMR3_KRN_D_EN))
+       || (m == cpu_mode_Supervisor && !(mem.mmu.MMR[3] & MMU_MMR3_SVR_D_EN))
+       || (m == cpu_mode_User && !(mem.mmu.MMR[3] & MMU_MMR3_USR_D_EN)))
+    {
+        // When D space is disabled, all references use the I space registers
+        s = cpu_space_I;
+    }
+
     // TODO: Check MMU mode
 
-    // TODO: Read from MMR3 weather D space is enabled or not
-
-    // Select Page Address Register (PAR).
+    // Select Page Address Register (PAR) and Page Descriptor Register (PDR).
     // Each CPU mode (Kernel, Supervisor and User) has it's own set
-    // of PARs and PDRs (Page Descriptor Registers)
-    // for each space (Instruction and Data).
+    // of PARs and PDRs for each space (Instruction and Data).
     // PAR for current space and mode is selected by
     // Active Page Field (APF) which is 3 most significant
     // bits of the virtual address. The rest 13 bits of the Virtual
     // Address (VA) are called Displacement Field (DF).
     // It consists of Block Number (BN) - higher 7 bits and
     // Displacement In Block (DIB) - lower 6 bits.
-    cpu_word PAR = mem.mmu.PAR[m][s][(addr & 0xE000) >> 12];
+    cpu_word PAR = mem.mmu.PAR[m][s][(addr >> 13) & 7];
+    cpu_word PDR = mem.mmu.PDR[m][s][(addr >> 13) & 7];
+
+    // TODO: PDR...
 
     // Page Address Field (PAF) of selected PAR is
     // 12 bits on 11/34A and 11/60 and 16 bits on 11/44 and 11/70.
     // It holds the starting address of the page.
-    ph_addr physicalAddr = PAR;
+    ph_addr PA = PAR;
 
     // The Physical Block Number (PBN) is obtained by
     // adding the PAF from PAR to BN from virtual address.
     // PBN will contain our final Physical Address (PA).
-    physicalAddr += (addr >> 6) & 0x007F;
+    PA += (addr >> 6) & 0x007F;
 
     // Get final PA by joining 6 bit DIB from VA to PBN.
-    physicalAddr = (physicalAddr << 6) | (addr & 0x003F);
+    PA = (PA << 6) | (addr & 0x003F);
 
-    return physicalAddr;
+//    if(*pAddr != addr)
+//        DEBUG("MAP!");
+
+//    if(PA >= 0x3E000)
+//        DEBUG("dbg");
+
+    if(!(mem.mmu.MMR[3] & MMU_MMR3_22BIT_MAP))
+    {
+        if(PA >= MEM_18BIT_PERIPH_PAGE_ADDR)
+        {
+            PA -= MEM_18BIT_PERIPH_PAGE_ADDR;
+            PA += MEM_UNIBUS_PERIPH_PAGE_ADDR + MEM_22BIT_UNIBUS_ADDR;
+        }
+    }
+    else
+        assert(false);  // TODO: Implement 22-bit mapping
+
+    return PA;
 }
 
 void mem_init(ph_addr base, const uint8_t* buf, ph_size size)
 {
     memset(&mem, 0, sizeof(mem));
-
-    for(size_t i = 0; i < sizeof(mem.peripheralPageMap) / sizeof(mem.peripheralPageMap[0]); ++i)
-    {
-        mem.peripheralPageMap[i].read = &_ioDummyRead;
-        mem.peripheralPageMap[i].write = &_ioDummyWrite;
-    }
 
     // Memory management registers
     mem_registerUnibusIO(0777572, 0777576, &_mmuRead, &_mmuWrite, NULL);  // MMR0 - MMR2
@@ -319,8 +315,8 @@ void mem_registerUnibusIO(un_addr ioStart, un_addr ioEnd, io_rd_cb rd, io_wr_cb 
 
     for(un_addr i = ioStart; i <= ioEnd; ++i)
     {
-        assert(mem.peripheralPageMap[i].read == &_ioDummyRead);
-        assert(mem.peripheralPageMap[i].write == &_ioDummyWrite);
+        assert(!mem.peripheralPageMap[i].read);
+        assert(!mem.peripheralPageMap[i].write);
 
         mem.peripheralPageMap[i].read = rd;
         mem.peripheralPageMap[i].write = wr;
@@ -343,79 +339,114 @@ void mem_deregisterUnibusIO(un_addr ioStart, un_addr ioEnd)
 
     for(un_addr i = ioStart; i < ioEnd; ++i)
     {
-        mem.peripheralPageMap[i].read = &_ioDummyRead;
-        mem.peripheralPageMap[i].write = &_ioDummyWrite;
+        mem.peripheralPageMap[i].read = NULL;
+        mem.peripheralPageMap[i].write = NULL;
         mem.peripheralPageMap[i].arg = NULL;
     }
 }
 
-bool mem_readUnibus(un_addr addr, cpu_word* data)
+static uint32_t _readRAM(ph_addr addr)
 {
     assert((addr & 1) == 0);
 
-    if(addr > MEM_UNIBUS_ADDR_MAX)
-        return false;
-
-    if(addr >= MEM_16BIT_PERIPH_PAGE_ADDR)
-    {
-        *data = _readIOPage(MEM_UNIBUS_PERIPH_PAGE_ADDR + (addr - MEM_16BIT_PERIPH_PAGE_ADDR));
-        return true;
-    }
-
     if(addr >= MEM_SIZE_BYTES)
-        return false;
+        return MEM_ERR(MEM_ERR_NX_MEM);
 
-    *data = mem.physicalMemory[addr >> 1];
-
-    return true;
+    return mem.physicalMemory[addr >> 1];
 }
 
-bool mem_writeUnibus(un_addr addr, bool bByte, cpu_word data)
+static uint32_t _writeRAM(ph_addr addr, bool bByte, cpu_word data)
 {
     assert(bByte || (addr & 1) == 0);
 
-    if(addr > MEM_UNIBUS_ADDR_MAX)
-        return false;
-
-    if(addr >= MEM_16BIT_PERIPH_PAGE_ADDR)
-    {
-        // TODO: Trap?
-        assert(!bByte);
-
-        _writeIOPage(MEM_UNIBUS_PERIPH_PAGE_ADDR + (addr - MEM_16BIT_PERIPH_PAGE_ADDR), data);
-        return true;
-    }
-
     if(addr >= MEM_SIZE_BYTES)
-        return false;
+        return MEM_ERR(MEM_ERR_NX_MEM);
 
     if(bByte)
     {
-        cpu_word w = 0;
-        if(!mem_readUnibus(addr & ~1U, &w))
-            return false;
-
         int sh = (8 * (addr & 1U));
         cpu_word mask = 0xFF << sh;
 
+        cpu_word w = mem.physicalMemory[addr >> 1];
         data = (((data & 0xFF) << sh) & mask) | (w & ~mask);
     }
 
     mem.physicalMemory[addr >> 1] = data;
 
-    return true;
+    return 0;
 }
 
-bool mem_read(cpu_addr addr, cpu_space s, cpu_mode m, cpu_word* data)
+uint32_t mem_readUnibus(un_addr addr)
 {
-    _mmuMap(addr, s, m);
+    assert((addr & 1) == 0);
 
-    return mem_readUnibus(addr, data);
+    assert(addr <= MEM_UNIBUS_ADDR_MAX);    // TODO: Debug
+    addr &= MEM_UNIBUS_ADDR_MAX;
+
+    if(addr < MEM_UNIBUS_PERIPH_PAGE_ADDR)
+        return _readRAM(addr);
+
+    //DEBUG("UNIBUS: I/O read: 0%06o", addr);
+
+    struct _periph_io* pio = _getPeriphIO(addr);
+    if(!pio->read)
+    {
+        DEBUG("UNIBUS: Reading unknown periphery page address: 0%08o", addr);
+        return MEM_ERR(MEM_ERR_UNB_TIMEOUT);
+    }
+
+    return pio->read(addr, pio->arg);
 }
 
-bool mem_write(cpu_addr addr, cpu_space s, cpu_mode m, bool bByte, cpu_word data)
+uint32_t mem_writeUnibus(un_addr addr, bool bByte, cpu_word data)
 {
-    return mem_writeUnibus(addr, bByte, data);
+    assert(bByte || (addr & 1) == 0);
+
+    assert(addr <= MEM_UNIBUS_ADDR_MAX);    // TODO: Debug
+    addr &= MEM_UNIBUS_ADDR_MAX;
+
+    if(addr < MEM_UNIBUS_PERIPH_PAGE_ADDR)
+        return _writeRAM(addr, bByte, data);
+
+    // TODO: Trap?
+    assert(!bByte);
+
+    //DEBUG("UNIBUS: I/O write: 0%06o -> addr 0%06o", data, addr);
+
+    struct _periph_io* pio = _getPeriphIO(addr);
+    if(!pio->write)
+    {
+        DEBUG("UNIBUS: Writing unknown periphery page address: 0%08o, data: 0%06o", addr, data);
+        return MEM_ERR(MEM_ERR_UNB_TIMEOUT);
+    }
+
+    pio->write(addr, data, pio->arg);
+
+    return 0;
+}
+
+uint32_t mem_read(cpu_addr addr, cpu_space s, cpu_mode m)
+{
+    ph_addr pa = _mmuMap(addr, s, m, false);
+    if(pa & MEM_HAS_ERR)
+        return pa;
+
+    if(pa >= MEM_22BIT_UNIBUS_ADDR)
+        return mem_readUnibus(pa - MEM_22BIT_UNIBUS_ADDR);
+
+    return _readRAM(pa);
+}
+
+uint32_t mem_write(cpu_addr addr, cpu_space s, cpu_mode m, bool bByte, cpu_word data)
+{
+    ph_addr pa = _mmuMap(addr, s, m, true);
+    if(pa & MEM_HAS_ERR)
+        return false;
+
+    if(pa >= MEM_22BIT_UNIBUS_ADDR)
+        return mem_writeUnibus(pa - MEM_22BIT_UNIBUS_ADDR, bByte, data);
+
+    return _writeRAM(pa, bByte, data);
 }
 
 void mem_mmu_reset(void)

@@ -332,7 +332,11 @@ static void _runFunction(void)
         return;
     }
 
+#if !CONFIG_RK11_NO_DELAYS
     unsigned long int ulOpTime = RK11_CYL_SEEK_TIME_US * (abs(disk->nCylinder - nCylinder) + 1);
+#else
+    unsigned long int ulOpTime = 0;
+#endif
 
     disk->func = func;
     disk->nSector = nSector;
@@ -410,7 +414,7 @@ static void _diskTaskCb(void *arg)
 
             for(nWordsDone = 0; nWordsDone < nWordsCount; ++nWordsDone)
             {
-                if(!mem_writeUnibus(addr, false, *data++))
+                if(mem_writeUnibus(addr, false, *data++) & MEM_HAS_ERR)
                 {
                     rk11.regs[RK11_RKER] |= RK11_RKER_NXM;
                     break;

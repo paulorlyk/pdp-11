@@ -85,7 +85,7 @@ int main(void)
     {
         if(!ts_isScheduled(kbdTask) && (i++ > 100))
         {
-            ts_schedule(kbdTask, 500 * TS_MILLISECONDS);
+            ts_schedule(kbdTask, 250 * TS_MILLISECONDS);
             i = 0;
         }
 

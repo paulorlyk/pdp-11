@@ -10,6 +10,11 @@
 #include <stdbool.h>
 #include <assert.h>
 
+typedef uint32_t operand_addr;
+
+#define OPERAND_TYPE_REG    (1U << 16)
+#define OPERAND_TYPE_BYTE   (1U << 17)
+
 #define SIGN_EXTEND_BYTE(b) (((b) & 0xFF) ^ ((~0xFF) * (((b) & 0x0080) != 0)))   // Assume two's complement integers
 
 #define BRANCH_IF(cond, offset)             \
@@ -18,21 +23,6 @@
         if((cond))                          \
             cpu.GPR[7] += (offset) * 2;     \
     } while(0)                              \
-
-#define PUSH_STACK(word)                                        \
-    do                                                          \
-    {                                                           \
-        cpu_addr addr;                                          \
-        _calculateOperandAddress(_auto_dec, 6, false, &addr);   \
-        _storeDestResult(_auto_dec, 6, false, addr, (word));    \
-    } while(0)                                                  \
-
-#define POP_STACK(dest)                                     \
-    do                                                      \
-    {                                                       \
-        cpu_addr addr;                                      \
-        (dest) = _fetchOperand(_auto_inc, 6, false, &addr); \
-    } while(0)                                              \
 
 #define CALC_V(a, b, r)    ((((a) ^ (b)) & 0x8000) && !(((b) ^ (r)) & 0x8000))
 
@@ -47,8 +37,11 @@ static struct
 
     device_handle device;
 
-    cpu_word GPR[8];
+    cpu_word *GPR;
     cpu_word PSW;
+
+    cpu_word regSet[2][8];
+    cpu_word lastSP[4];
 } cpu;
 
 enum _opcode
@@ -125,16 +118,15 @@ enum _opcode
     _jsr        = 0x0800,   // JSR      Jump to Subroutine
     _rts        = 0x0080,   // RTS      Return from Subroutine
     _reset      = 0x0005,   // RESET    Sends INIT on the UNIBUS for 10ms
+    _spl        = 0x0098,   // SPL      Set priority level
+    _rti        = 0x0002,   // RTI      Return from Interrupt
 
     // 000000   HALT     Halt
     // 000001   WAIT     Wait for Interrupt
-    // 000002   RTI      Return from Interrupt
     // 000003   BPT      Breakpoint Trap
     // 000004   IOT      I/O Trap
     // 000006   RTT      Return from Interrupt
     // 000007   MFPT     Move From Processor (PDP-11/44 ONLY)
-
-    // 00023N   SPL      Set priority level
 
     // 000240   C        Clear selected condition code bits
     // 000241   CLC      Clear C
@@ -185,6 +177,7 @@ enum _instructionType
     _instt_double_op,
     _instt_branch,
     _instt_rts,
+    _instt_spl,
     _instt_double_op_reg_src,
     _instt_system
 };
@@ -201,50 +194,67 @@ struct _instruction
     int offset;
 };
 
+static void _trap(cpu_word vec);
+
 static cpu_word _signExtend(cpu_word w, bool bByte)
 {
     return bByte ? SIGN_EXTEND_BYTE(w) : w;
 }
 
-static cpu_word _read(cpu_addr addr, bool bByte)
+static bool _read(cpu_addr addr, bool bByte, cpu_space space, cpu_mode mode, cpu_word *data)
 {
-    cpu_word data = 0;
-
-    if(!mem_read(addr & ~1U, cpu_space_I, cpu_mode_Kernel, &data))
+    uint32_t w = mem_read(addr & ~1U, space, mode);
+    if(w & MEM_HAS_ERR)
     {
-        // TODO: Trap
-        assert(false);
+        DEBUG("CPU MEM READ ERROR: 0x%08x", w);
+
+        // TODO: Update CPU Error Register
+        _trap(4);
+        return false;
     }
 
     if(bByte)
-        data = data >> (8 * (addr & 1U)) & 0xFF;
+        w = w >> (8 * (addr & 1U)) & 0xFF;
 
-    return _signExtend(data, bByte);
+    *data = _signExtend(w, bByte);
+
+    return true;
 }
 
-static void _write(cpu_addr addr, bool bByte, cpu_word data)
+static bool _write(cpu_addr addr, bool bByte, cpu_word data, cpu_space space, cpu_mode mode)
 {
 //    if(bByte)
 //        data &= 0xFF;
 
-    if(!mem_write(addr, cpu_space_I, cpu_mode_Kernel, bByte, data))
+    uint32_t res = mem_write(addr, space, mode, bByte, data);
+    if(res & MEM_HAS_ERR)
     {
-        // TODO: Trap
-        assert(false);
+        DEBUG("CPU MEM WRITE ERROR: 0x%08x", res);
+
+        // TODO: Update CPU Error Register
+        _trap(4);
+        return false;
     }
+
+    return true;
 }
 
-static cpu_word _fetchPC(void)
+static int _fetchPC(cpu_word* data)
 {
     if(cpu.GPR[7] & 1)
     {
         // TODO: Boundary error trap
         assert(false);
+
+        return 0;
     }
 
-    cpu_word res = _read(cpu.GPR[7], false);
+    if(!_read(cpu.GPR[7], false, cpu_space_I, PSW_GET_CUR_MODE(cpu.PSW), data))
+        return false;
+
     cpu.GPR[7] += 2;
-    return res;
+
+    return 2;
 }
 
 static void _decode(cpu_word inst, struct _instruction* pInst)
@@ -347,19 +357,20 @@ static void _decode(cpu_word inst, struct _instruction* pInst)
                     pInst->dstMode = (inst & 0x0038) >> 3;
                     pInst->dst = (inst & 0x0007) >> 0;
                 }
-                else if((inst & 0xFFF8) == 0x0080)  // 0000 0000 1000 0xxx
+                else if((inst & 0xFFF8) == 0x0080 || (inst & 0xFFF8) == 0x0098)  // 0000 0000 100I Ixxx; II = 0 || II == 3
                 {
                     // RTS
+                    // SPL
                     //  15                      3   2      0
                     // [0 0 0 0 0 0 0 0 1 0 0 0 0] [Register]
 
-                    //DEBUG("Decoder: RTS instruction");
+                    //DEBUG("Decoder: RTS/SPL instruction");
 
-                    pInst->type = _instt_rts;
+                    pInst->type = (inst & 0xFFF8) == 0x0080 ? _instt_rts : _instt_spl;
                     pInst->opcode = inst & 0xFFF8;
                     pInst->dst = (inst & 0x0007) >> 0;
                 }
-                else    // 0000 0000 0000 0xxx
+                else
                 {
                     // System instructions
 
@@ -481,10 +492,9 @@ static const char* _formatInstructionOperand(enum _addressingMode mode, int reg,
 
             case _auto_inc: // PC Immediate
             {
-                cpu_word data = 0;
-                // TODO: MMU support
-                if(!mem_readUnibus(*pc += 2, &data))
-                    pos += sprintf(res + pos, "#?");
+                cpu_word data = mem_read(*pc += 2, cpu_space_I, PSW_GET_CUR_MODE(cpu.PSW));
+                if(data & MEM_HAS_ERR)
+                    pos += sprintf(res + pos, "#?[MEM_FAULT]");
                 else
                     pos += sprintf(res + pos, "#%06o", data);
 
@@ -493,10 +503,9 @@ static const char* _formatInstructionOperand(enum _addressingMode mode, int reg,
 
             case _auto_inc_deferred: // PC Absolute
             {
-                cpu_word data = 0;
-                // TODO: MMU support
-                if(!mem_readUnibus(*pc += 2, &data))
-                    pos += sprintf(res + pos, "@#?");
+                cpu_word data = mem_read(*pc += 2, cpu_space_I, PSW_GET_CUR_MODE(cpu.PSW));
+                if(data & MEM_HAS_ERR)
+                    pos += sprintf(res + pos, "@#?[MEM_FAULT]");
                 else
                     pos += sprintf(res + pos, "@#%06o", data);
 
@@ -512,10 +521,9 @@ static const char* _formatInstructionOperand(enum _addressingMode mode, int reg,
 
         case _index:
         {
-            cpu_word data = 0;
-            // TODO: MMU support
-            if(!mem_readUnibus(*pc += 2, &data))
-                pos += sprintf(res + pos, "X(%s)", cpu.arrRegNameLUT[reg]);
+            cpu_word data = mem_read(*pc += 2, cpu_space_I, PSW_GET_CUR_MODE(cpu.PSW));
+            if(data & MEM_HAS_ERR)
+                pos += sprintf(res + pos, "X[MEM_FAULT](%s)", cpu.arrRegNameLUT[reg]);
             else
                 pos += sprintf(res + pos, "#%06o(%s)", data, cpu.arrRegNameLUT[reg]);
 
@@ -524,10 +532,9 @@ static const char* _formatInstructionOperand(enum _addressingMode mode, int reg,
 
         case _index_deferred:
         {
-            cpu_word data = 0;
-            // TODO: MMU support
-            if(!mem_readUnibus(*pc += 2, &data))
-                pos += sprintf(res + pos, "@X(%s)", cpu.arrRegNameLUT[reg]);
+            cpu_word data = mem_read(*pc += 2, cpu_space_I, PSW_GET_CUR_MODE(cpu.PSW));
+            if(data & MEM_HAS_ERR)
+                pos += sprintf(res + pos, "@X[MEM_FAULT](%s)", cpu.arrRegNameLUT[reg]);
             else
                 pos += sprintf(res + pos, "@#%06o(%s)", data, cpu.arrRegNameLUT[reg]);
 
@@ -573,6 +580,10 @@ static const char* _formatInstruction(cpu_addr pc, cpu_word instWord, const stru
             pos += sprintf(res + pos, " %s", cpu.arrRegNameLUT[pInst->dst]);
             break;
 
+        case _instt_spl:
+            pos += sprintf(res + pos, " %o", pInst->dst);
+            break;
+
         case _instt_double_op_reg_src:
             pos += sprintf(res + pos, " %s", _formatInstructionOperand(pInst->srcMode, pInst->src, &pc));
             pos += sprintf(res + pos, ", %s", cpu.arrRegNameLUT[pInst->reg]);
@@ -585,52 +596,64 @@ static const char* _formatInstruction(cpu_addr pc, cpu_word instWord, const stru
     return res;
 }
 
-static bool _calculateOperandAddress(enum _addressingMode mode, int reg, bool bByte, cpu_addr *pAddr)
+static bool _makeOperandAddress(enum _addressingMode mode, int reg, bool bByte, operand_addr *pAddr)
 {
     assert(mode >= _reg && mode <= _index_deferred);
     assert(reg >= 0 && reg < 8);
 
     cpu_word *pRn = cpu.GPR + reg;
-
     int nRnDiff = 0;
+    cpu_word addr;
+
+    *pAddr = 0;
 
     switch(mode)
     {
         default:
         case _reg:
-            *pAddr = 0;
-            return false;
+            *pAddr |= OPERAND_TYPE_REG;
+            addr = reg;
+            break;
 
         case _reg_deferred:
-            *pAddr = *pRn;
+            addr = *pRn;
             break;
 
         case _auto_inc:
-            *pAddr = *pRn;
-            *pRn += nRnDiff = 1 + !bByte;
+            addr = *pRn;
+            *pRn += nRnDiff = 1 + (!bByte || reg == 6 || reg == 7);
             break;
 
         case _auto_inc_deferred:
-            *pAddr = _read(*pRn, false);
+            if(!_read(*pRn, false, cpu_space_D, PSW_GET_CUR_MODE(cpu.PSW), &addr))
+                return false;
+
             *pRn += nRnDiff = 2;
             break;
 
         case _auto_dec:
-            *pRn += nRnDiff = -(1 + !bByte);
-            *pAddr = *pRn;
+            *pRn += nRnDiff = -(1 + (!bByte || reg == 6 || reg == 7));
+            addr = *pRn;
             break;
 
         case _auto_dec_deferred:
-            *pRn += nRnDiff = -(1 + !bByte);
-            *pAddr = _read(*pRn, false);
+            nRnDiff = -2;
+
+            if(!_read(*pRn, false, cpu_space_D, PSW_GET_CUR_MODE(cpu.PSW), &addr))
+                return false;
+
+            *pRn += nRnDiff;
             break;
 
         case _index:
         {
             // Make sure that index was fetched before reading register value
             // This is important in case if register itself is PC
-            cpu_word X = _fetchPC();
-            *pAddr = *pRn + X;
+            cpu_word X;
+            if(!(nRnDiff = _fetchPC(&X)))
+                return false;
+
+            addr = *pRn + X;
             break;
         }
 
@@ -638,39 +661,100 @@ static bool _calculateOperandAddress(enum _addressingMode mode, int reg, bool bB
         {
             // Make sure that index was fetched before reading register value
             // This is important in case if register itself is PC
-            cpu_word X = _fetchPC();
-            *pAddr = _read(*pRn + X, false);
+            cpu_word X;
+            if(!(nRnDiff = _fetchPC(&X)))
+                return false;
+
+            if(!_read(*pRn + X, false, cpu_space_D, PSW_GET_CUR_MODE(cpu.PSW), &addr))
+                return false;
             break;
         }
     }
+
+    *pAddr |= addr;
+    if(bByte)
+        *pAddr |= OPERAND_TYPE_BYTE;
 
     mem_updateMMR1(reg, nRnDiff);
 
     return true;
 }
 
-static cpu_word _fetchOperand(enum _addressingMode mode, int reg, bool bByte, cpu_addr *pAddr)
+static bool _load(enum _addressingMode mode, int reg, bool bByte, operand_addr* pAddr, cpu_word* data)
 {
-    if(_calculateOperandAddress(mode, reg, bByte, pAddr))
-        return _read(*pAddr, bByte);
+    if(!_makeOperandAddress(mode, reg, bByte, pAddr))
+        return false;
 
-    return _signExtend(cpu.GPR[reg], bByte);
+    if(*pAddr & OPERAND_TYPE_REG)
+    {
+        *data = _signExtend(cpu.GPR[reg], bByte);
+        return true;
+    }
+
+    return _read(*pAddr, bByte, cpu_space_D, PSW_GET_CUR_MODE(cpu.PSW), data);
 }
 
-static void _storeDestResult(enum _addressingMode mode, int reg, bool bByte, cpu_addr addr, cpu_word data)
+static bool _store(operand_addr addr, cpu_word data)
 {
-    assert(mode >= _reg && mode <= _index_deferred);
-    assert(reg >= 0 && reg < 8);
+    if(addr & OPERAND_TYPE_REG)
+    {
+        cpu.GPR[addr & 7] = data;
+        return true;
+    }
 
-    if(mode == _reg)
-        cpu.GPR[reg] = data;
-    else
-        _write(addr, bByte, data);
+    return _write(addr, addr & OPERAND_TYPE_BYTE, data, cpu_space_D, PSW_GET_CUR_MODE(cpu.PSW));
+}
+
+static bool _push(cpu_word w)
+{
+    operand_addr addr;
+    return _makeOperandAddress(_auto_dec, 6, false, &addr) && _store(addr, w);
+}
+
+static bool _pop(cpu_word* w)
+{
+    operand_addr addr;
+    return _load(_auto_inc, 6, false, &addr, w);
 }
 
 static void _setFlags(bool n, bool z, bool v, bool c)
 {
     cpu.PSW = (cpu.PSW & ~0x000F) | (n << 3) | (z << 2) | (v << 1) | (c << 0);
+}
+
+static void _setPSW(cpu_word psw)
+{
+    cpu.lastSP[PSW_GET_CUR_MODE(cpu.PSW)] = cpu.GPR[6];
+    cpu_word lastPC = cpu.GPR[7];
+
+    cpu.GPR = cpu.regSet[PSW_GET_REG_SET(psw)];
+    cpu.GPR[6] = cpu.lastSP[PSW_GET_CUR_MODE(psw)];
+    cpu.GPR[7] = lastPC;
+
+    cpu.PSW = psw;
+}
+
+static void _trap(cpu_word vec)
+{
+    DEBUG("TRAP %u", vec);
+
+    if(!_push(cpu.PSW) || !_push(cpu.GPR[7]))
+    {
+        // TODO: Trap from trap
+        assert(false);
+    }
+
+    cpu_word trapPC;
+    cpu_word trapPSW;
+    if(   !_read(vec, false, cpu_space_D, cpu_mode_Kernel, &trapPC)
+       || !_read(vec + 2, false, cpu_space_D, cpu_mode_Kernel, &trapPSW))
+    {
+        // TODO: Trap from trap
+        assert(false);
+    }
+
+    _setPSW(PSW_SET_PREV_MODE(trapPSW, PSW_GET_CUR_MODE(cpu.PSW)));
+    cpu.GPR[7] = trapPC;
 }
 
 static void _initNameLUT(void)
@@ -777,24 +861,27 @@ static void _initNameLUT(void)
     cpu.arrOpcodeNameLUT[_jsr]    = "JSR";
     cpu.arrOpcodeNameLUT[_rts]    = "RTS";
     cpu.arrOpcodeNameLUT[_reset]  = "RESET";
+    cpu.arrOpcodeNameLUT[_spl]    = "SPL";
+    cpu.arrOpcodeNameLUT[_rti]    = "RTI";
 }
 
 static cpu_word _cpuDeviceRead(un_addr addr, void* arg)
 {
     (void)arg;
 
+    assert(!(addr & 1));
+
     switch(addr)
     {
-        default:
-            // TODO: Trap
-            assert(false);
-            break;
-
         case 0777776:   // PS
-            assert(false);
-            break;
+            //DEBUG("CPU: PS RD");
+            return cpu.PSW;
+
+        case 0777570:   // Console Switch & Display Register
+            return 0;
     }
 
+    assert(false);
     return 0;
 }
 
@@ -802,15 +889,21 @@ static void _cpuDeviceWrite(un_addr addr, cpu_word data, void* arg)
 {
     (void)arg;
 
+    assert(!(addr & 1));
+
     switch(addr)
     {
         default:
-            // TODO: Trap
             assert(false);
             break;
 
         case 0777776:   // PS
-            assert(false);
+            //DEBUG("CPU: PS WR");
+            _setPSW(data);
+            break;
+
+        case 0777570:   // Console Switch & Display Register
+            DEBUG("DISPLAY: 0x%04X", data);
             break;
     }
 }
@@ -819,10 +912,14 @@ bool cpu_init(cpu_word R7)
 {
     memset(&cpu, 0, sizeof(cpu));
 
+    cpu.GPR = cpu.regSet[CPU_MODE_KERNEL];
+    _setPSW(0);
+
     _initNameLUT();
 
     dev_io_info ioMap[] = {
         { 0777776, 0777776, &_cpuDeviceRead, &_cpuDeviceWrite, NULL },
+        { 0777570, 0777570, &_cpuDeviceRead, &_cpuDeviceWrite, NULL },
         { 0 }
     };
     if(!(cpu.device = dev_initDevice(ioMap, 0, NULL, NULL, NULL)))
@@ -848,10 +945,12 @@ device_handle cpu_getHandle(void)
 void cpu_run(void)
 {
     // TODO: Debug
-    if(cpu.GPR[7] == 0137176)
+    //if(cpu.GPR[7] == 0137176)
     {
-        //cpu.bDisassemblyOutput = true;
+    //    cpu.bDisassemblyOutput = true;
     }
+
+    // TODO: Check for pre-existing traps
 
     // MMR1 records any auto increment/decrement of the general purpose
     // registers, including explicit references through the PC. MMR1 is
@@ -869,7 +968,10 @@ void cpu_run(void)
     //on EMT, TRAP, BPT and lOT instructions.
     mem_updateMMR2(cpu.GPR[7]);
 
-    cpu_word instWord = _fetchPC();
+    cpu_word instWord;
+    if(!_fetchPC(&instWord))
+        return;
+
     //DEBUG("Instruction fetch: 0%06o: 0%06o", cpu.GPR[7] - 2, instWord);
 
     struct _instruction inst = {0};
@@ -880,21 +982,14 @@ void cpu_run(void)
         DEBUG("%s", _formatInstruction(cpu.GPR[7] - 2, instWord, &inst));
 
         // TODO: Debug
-        int dbg = 0;
-    }
-
-    // TODO: 3 word instruction
-    if((inst.srcMode == _index || inst.srcMode == _index_deferred) && (inst.dstMode == _index || inst.dstMode == _index_deferred))
-    {
-        DEBUG("Double index instruction - not sure how to execute");
-        assert(false);
+        //int dbg = 0;
     }
 
     cpu_word srcVal = 0;
-    cpu_addr srcAddr = 0;
+    operand_addr srcAddr = 0;
 
     cpu_word dstVal = 0;
-    cpu_addr dstAddr = 0;
+    operand_addr dstAddr = 0;
 
     bool byteFlag = inst.opcode & 0x8000;
 
@@ -903,80 +998,112 @@ void cpu_run(void)
         case _mov:
         case _movb:
         {
-            srcVal = _fetchOperand(inst.srcMode, inst.src, byteFlag, &srcAddr);
-            _calculateOperandAddress(inst.dstMode, inst.dst, byteFlag, &dstAddr);
-            _storeDestResult(inst.dstMode, inst.dst, byteFlag, dstAddr, srcVal);
-            _setFlags(srcVal & 0x8000, !srcVal, 0, PSW_GET_C(cpu.PSW));
+            if(   _load(inst.srcMode, inst.src, byteFlag, &srcAddr, &srcVal)
+               && _makeOperandAddress(inst.dstMode, inst.dst, byteFlag, &dstAddr)
+               && _store(dstAddr, srcVal))
+            {
+                _setFlags(srcVal & 0x8000, !srcVal, 0, PSW_GET_C(cpu.PSW));
+            }
             break;
         }
 
         case _cmp:
         case _cmpb:
         {
-            srcVal = _fetchOperand(inst.srcMode, inst.src, byteFlag, &srcAddr);
-            dstVal = _fetchOperand(inst.dstMode, inst.dst, byteFlag, &dstAddr);
-            int32_t res = srcVal - dstVal;
-            _setFlags(res < 0, !res, CALC_V(srcVal, dstVal, res), res & 0x10000);
+            if(   _load(inst.srcMode, inst.src, byteFlag, &srcAddr, &srcVal)
+               && _load(inst.dstMode, inst.dst, byteFlag, &dstAddr, &dstVal))
+            {
+                int32_t res = srcVal - dstVal;
+                _setFlags(res < 0, !res, CALC_V(srcVal, dstVal, res), res & 0x10000);
+            }
             break;
         }
 
         case _bit:
         case _bitb:
         {
-            srcVal = _fetchOperand(inst.srcMode, inst.src, byteFlag, &srcAddr);
-            dstVal = _fetchOperand(inst.dstMode, inst.dst, byteFlag, &dstAddr);
-            cpu_word res = srcVal & dstVal;
-            _setFlags(res & 0x8000, !res, 0, PSW_GET_C(cpu.PSW));
+            if(   _load(inst.srcMode, inst.src, byteFlag, &srcAddr, &srcVal)
+               && _load(inst.dstMode, inst.dst, byteFlag, &dstAddr, &dstVal))
+            {
+                dstVal &= srcVal;
+                _setFlags(dstVal & 0x8000, !dstVal, 0, PSW_GET_C(cpu.PSW));
+            }
             break;
         }
 
         case _bic:
         case _bicb:
         {
-            srcVal = _fetchOperand(inst.srcMode, inst.src, byteFlag, &srcAddr);
-            dstVal = _fetchOperand(inst.dstMode, inst.dst, byteFlag, &dstAddr);
-            dstVal &= ~srcVal;
-            _storeDestResult(inst.dstMode, inst.dst, byteFlag, dstAddr, dstVal);
-            _setFlags(dstVal & 0x8000, !dstVal, 0, PSW_GET_C(cpu.PSW));
+            if(   _load(inst.srcMode, inst.src, byteFlag, &srcAddr, &srcVal)
+               && _load(inst.dstMode, inst.dst, byteFlag, &dstAddr, &dstVal))
+            {
+                dstVal &= ~srcVal;
+                if(_store(dstAddr, dstVal))
+                    _setFlags(dstVal & 0x8000, !dstVal, 0, PSW_GET_C(cpu.PSW));
+            }
             break;
         }
 
         case _bis:
         case _bisb:
         {
-            srcVal = _fetchOperand(inst.srcMode, inst.src, byteFlag, &srcAddr);
-            dstVal = _fetchOperand(inst.dstMode, inst.dst, byteFlag, &dstAddr);
-            dstVal |= srcVal;
-            _storeDestResult(inst.dstMode, inst.dst, byteFlag, dstAddr, dstVal);
-            _setFlags(dstVal & 0x8000, !dstVal, 0, PSW_GET_C(cpu.PSW));
+            if(   _load(inst.srcMode, inst.src, byteFlag, &srcAddr, &srcVal)
+               && _load(inst.dstMode, inst.dst, byteFlag, &dstAddr, &dstVal))
+            {
+                dstVal |= srcVal;
+                if(_store(dstAddr, dstVal))
+                    _setFlags(dstVal & 0x8000, !dstVal, 0, PSW_GET_C(cpu.PSW));
+            }
             break;
         }
 
         case _add:
         {
-            srcVal = _fetchOperand(inst.srcMode, inst.src, false, &srcAddr);
-            dstVal = _fetchOperand(inst.dstMode, inst.dst, false, &dstAddr);
-            uint32_t res = srcVal + dstVal;
-            _storeDestResult(inst.dstMode, inst.dst, false, dstAddr, res);
-            _setFlags(res & 0x8000, !res, CALC_V(srcVal, dstVal, res), res & 0x10000);
+            if(   _load(inst.srcMode, inst.src, false, &srcAddr, &srcVal)
+               && _load(inst.dstMode, inst.dst, false, &dstAddr, &dstVal))
+            {
+                uint32_t res = srcVal + dstVal;
+                if(_store(dstAddr, res))
+                    _setFlags(res & 0x8000, !res, CALC_V(srcVal, dstVal, res), res & 0x10000);
+            }
             break;
         }
 
         case _sub:
         {
-            srcVal = _fetchOperand(inst.srcMode, inst.src, false, &srcAddr);
-            dstVal = _fetchOperand(inst.dstMode, inst.dst, false, &dstAddr);
-            uint32_t res = dstVal - srcVal;
-            _storeDestResult(inst.dstMode, inst.dst, false, dstAddr, res);
-            _setFlags(res & 0x8000, !res, CALC_V(srcVal, dstVal, res), res & 0x10000);
+            if(   _load(inst.srcMode, inst.src, false, &srcAddr, &srcVal)
+               && _load(inst.dstMode, inst.dst, false, &dstAddr, &dstVal))
+            {
+                uint32_t res = dstVal - srcVal;
+                if(_store(dstAddr, res))
+                    _setFlags(res & 0x8000, !res, CALC_V(srcVal, dstVal, res), res & 0x10000);
+            }
             break;
         }
 
-        case _mul: assert(false);
+        case _mul:
+        {
+            if(!_load(inst.srcMode, inst.src, false, &srcAddr, &srcVal))
+                break;
+            dstVal = cpu.GPR[inst.reg];
+
+            // Convert to signed integer
+            int32_t src = ((int32_t)(srcVal & 0x7FFF)) - ((int32_t)(srcVal & 0x8000));
+            int32_t dst = ((int32_t)(dstVal & 0x7FFF)) - ((int32_t)(dstVal & 0x8000));
+
+            int32_t mul = src * dst;
+            cpu.GPR[inst.reg] = mul >> 16;
+            cpu.GPR[inst.reg | 1] = mul;
+
+            _setFlags(mul & 0x80000000, !mul, 0, mul < -32768 || mul >= 32768);
+            break;
+        }
 
         case _div:
         {
-            srcVal = _fetchOperand(inst.srcMode, inst.src, false, &srcAddr);
+            if(!_load(inst.srcMode, inst.src, false, &srcAddr, &srcVal))
+                break;
+
             if(srcVal != 0)
             {
                 // Convert to signed integer
@@ -1006,8 +1133,10 @@ void cpu_run(void)
 
         case _ash:
         {
+            if(!_load(inst.srcMode, inst.src, false, &srcAddr, &srcVal))
+                break;
+
             dstVal = cpu.GPR[inst.reg];
-            srcVal = _fetchOperand(inst.srcMode, inst.src, false, &srcAddr);
 
             // The shift bits count ranges from -32 (right shift)
             // to +31 (left shift). Choose 64bit uints here to
@@ -1032,8 +1161,8 @@ void cpu_run(void)
                 c = dstVal & (0x8000ULL >> (n - 1));
             }
 
-            _setFlags(res & 0x8000, !(res & 0xFFFF), (res ^ dstVal) & 0x8000, c);
             cpu.GPR[inst.reg] = res;
+            _setFlags(res & 0x8000, !(res & 0xFFFF), (res ^ dstVal) & 0x8000, c);
             break;
         }
 
@@ -1054,19 +1183,23 @@ void cpu_run(void)
 
         case _swab:
         {
-            dstVal = _fetchOperand(inst.dstMode, inst.dst, false, &dstAddr);
-            uint32_t res = (dstVal << 8) | (dstVal >> 8);
-            _storeDestResult(inst.dstMode, inst.dst, false, dstAddr, res);
-            _setFlags(res & 0x0080, !(res & 0xFF), 0, 0);
+            if(_load(inst.dstMode, inst.dst, false, &dstAddr, &dstVal))
+            {
+                uint32_t res = (dstVal << 8) | (dstVal >> 8);
+                if(_store(dstAddr, res))
+                    _setFlags(res & 0x0080, !(res & 0xFF), 0, 0);
+            }
             break;
         }
 
         case _clr:
         case _clrb:
         {
-            _calculateOperandAddress(inst.dstMode, inst.dst, byteFlag, &dstAddr);
-            _storeDestResult(inst.dstMode, inst.dst, byteFlag, dstAddr, 0);
-            _setFlags(0, 1, 0, 0);
+            if(    _makeOperandAddress(inst.dstMode, inst.dst, byteFlag, &dstAddr)
+                && _store(dstAddr, 0))
+            {
+                _setFlags(0, 1, 0, 0);
+            }
             break;
         }
 
@@ -1076,10 +1209,12 @@ void cpu_run(void)
         case _inc:
         case _incb:
         {
-            dstVal = _fetchOperand(inst.dstMode, inst.dst, byteFlag, &dstAddr);
-            ++dstVal;
-            _setFlags(dstVal & 0x8000, !dstVal, dstVal == 0x8000, PSW_GET_C(cpu.PSW));
-            _storeDestResult(inst.dstMode, inst.dst, byteFlag, dstAddr, dstVal);
+            if(_load(inst.dstMode, inst.dst, byteFlag, &dstAddr, &dstVal))
+            {
+                ++dstVal;
+                if(_store(dstAddr, dstVal))
+                    _setFlags(dstVal & 0x8000, !dstVal, dstVal == 0x8000, PSW_GET_C(cpu.PSW));
+            }
             break;
         }
 
@@ -1098,8 +1233,8 @@ void cpu_run(void)
         case _tst:
         case _tstb:
         {
-            dstVal = _fetchOperand(inst.dstMode, inst.dst, byteFlag, &dstAddr);
-            _setFlags(dstVal & 0x8000, !dstVal, 0, 0);
+            if(_load(inst.dstMode, inst.dst, byteFlag, &dstAddr, &dstVal))
+                _setFlags(dstVal & 0x8000, !dstVal, 0, 0);
             break;
         }
 
@@ -1115,12 +1250,16 @@ void cpu_run(void)
         case _asl:
         case _aslb:
         {
-            uint32_t res = _fetchOperand(inst.dstMode, inst.dst, byteFlag, &dstAddr);
-            res <<= 1;
-            bool n = res & 0x8000;
-            bool c = res & 0x10000;
-            _setFlags(n, !res, n != c, c);
-            _storeDestResult(inst.dstMode, inst.dst, byteFlag, dstAddr, res);
+            if(_load(inst.dstMode, inst.dst, byteFlag, &dstAddr, &dstVal))
+            {
+                uint32_t res = ((uint32_t)dstVal) << 1;
+                if(_store(dstAddr, res))
+                {
+                    bool n = res & 0x8000;
+                    bool c = res & 0x10000;
+                    _setFlags(n, !res, n != c, c);
+                }
+            }
             break;
         }
 
@@ -1128,11 +1267,39 @@ void cpu_run(void)
 
         case _mtps: assert(false);
 
-        case _mfpi: assert(false);
+        case _mfpi:
+        {
+            if(!_makeOperandAddress(inst.dstMode, inst.dst, false, &dstAddr))
+                break;
+
+            if(dstAddr & OPERAND_TYPE_REG)
+                dstVal = cpu.GPR[inst.dst];
+            else if(!_read(dstAddr, false, cpu_space_I, PSW_GET_PREV_MODE(cpu.PSW), &dstVal))
+                break;
+
+            if(_push(dstVal))
+                _setFlags(dstVal & 0x8000, !dstVal, 0, PSW_GET_C(cpu.PSW));
+            break;
+        }
 
         case _mfpd: assert(false);
 
-        case _mtpi: assert(false);
+        case _mtpi:
+        {
+            if(   !_makeOperandAddress(inst.dstMode, inst.dst, false, &dstAddr)
+               || !_pop(&dstVal))
+            {
+                break;
+            }
+
+            if(dstAddr & OPERAND_TYPE_REG)
+                cpu.GPR[inst.dst] = dstVal;
+            else if(!_write(dstAddr, false, dstVal, cpu_space_I, PSW_GET_PREV_MODE(cpu.PSW)))
+                break;
+
+            _setFlags(dstVal & 0x8000, !dstVal, 0, PSW_GET_C(cpu.PSW));
+            break;
+        }
 
         case _mtpd: assert(false);
 
@@ -1140,67 +1307,101 @@ void cpu_run(void)
 
         case _mfps: assert(false);
 
-        case _br:   BRANCH_IF(true, inst.offset); break;
-        case _bne:  BRANCH_IF(!PSW_GET_Z(cpu.PSW), inst.offset); break;
-        case _beq:  BRANCH_IF(PSW_GET_Z(cpu.PSW), inst.offset); break;
-        case _bge:  BRANCH_IF(PSW_GET_N(cpu.PSW) == PSW_GET_V(cpu.PSW), inst.offset); break;
-
-        case _blt: assert(false);
-
-        case _bgt: assert(false);
-
-        case _ble: assert(false);
-
-        case _bpl: BRANCH_IF(!PSW_GET_N(cpu.PSW), inst.offset); break;
-
-        case _bmi: assert(false);
-
-        case _bhi: BRANCH_IF(!PSW_GET_C(cpu.PSW) && !PSW_GET_Z(cpu.PSW), inst.offset); break;
-
-        case _blos: assert(false);
-
-        case _bvc: assert(false);
-
-        case _bvs: assert(false);
-
-        case _bcc: BRANCH_IF(!PSW_GET_C(cpu.PSW), inst.offset); break;
-        case _bcs: BRANCH_IF(PSW_GET_C(cpu.PSW), inst.offset); break;
+        case _br:   BRANCH_IF(true,                                                              inst.offset); break;
+        case _bne:  BRANCH_IF(!PSW_GET_Z(cpu.PSW),                                               inst.offset); break;
+        case _beq:  BRANCH_IF(PSW_GET_Z(cpu.PSW),                                                inst.offset); break;
+        case _bge:  BRANCH_IF(PSW_GET_N(cpu.PSW) == PSW_GET_V(cpu.PSW),                          inst.offset); break;
+        case _blt:  BRANCH_IF(PSW_GET_N(cpu.PSW) != PSW_GET_V(cpu.PSW),                          inst.offset); break;
+        case _bgt:  BRANCH_IF(!PSW_GET_Z(cpu.PSW) && (PSW_GET_N(cpu.PSW) == PSW_GET_V(cpu.PSW)), inst.offset); break;
+        case _ble:  BRANCH_IF(!PSW_GET_Z(cpu.PSW) && (PSW_GET_N(cpu.PSW) != PSW_GET_V(cpu.PSW)), inst.offset); break;
+        case _bpl:  BRANCH_IF(!PSW_GET_N(cpu.PSW),                                               inst.offset); break;
+        case _bmi:  BRANCH_IF(PSW_GET_N(cpu.PSW),                                                inst.offset); break;
+        case _bhi:  BRANCH_IF(!(PSW_GET_C(cpu.PSW) || PSW_GET_Z(cpu.PSW)),                       inst.offset); break;
+        case _blos: BRANCH_IF(PSW_GET_C(cpu.PSW) || PSW_GET_Z(cpu.PSW),                          inst.offset); break;
+        case _bvc:  BRANCH_IF(!PSW_GET_V(cpu.PSW),                                               inst.offset); break;
+        case _bvs:  BRANCH_IF(PSW_GET_V(cpu.PSW),                                                inst.offset); break;
+        case _bcc:  BRANCH_IF(!PSW_GET_C(cpu.PSW),                                               inst.offset); break;
+        case _bcs:  BRANCH_IF(PSW_GET_C(cpu.PSW),                                                inst.offset); break;
 
         case _jmp:
         {
-            if(!_calculateOperandAddress(inst.dstMode, inst.dst, byteFlag, &dstAddr))
+            if(_makeOperandAddress(inst.dstMode, inst.dst, byteFlag, &dstAddr))
             {
-                // TODO: Illegal instruction trap
-                assert(false);
+                if(dstAddr & OPERAND_TYPE_REG)
+                {
+                    // TODO: Illegal instruction trap
+                    assert(false);
+                }
+                else
+                    cpu.GPR[7] = dstAddr;
             }
-            cpu.GPR[7] = dstAddr;
             break;
         }
 
         case _jsr:
         {
-            if(!_calculateOperandAddress(inst.dstMode, inst.dst, byteFlag, &dstAddr))
+            if(_makeOperandAddress(inst.dstMode, inst.dst, byteFlag, &dstAddr))
             {
-                // TODO: Illegal instruction trap
-                assert(false);
+                if(dstAddr & OPERAND_TYPE_REG)
+                {
+                    // TODO: Illegal instruction trap
+                    assert(false);
+                }
+                else if(_push(cpu.GPR[inst.src]))
+                {
+                    cpu.GPR[inst.src] = cpu.GPR[7];
+                    cpu.GPR[7] = dstAddr;
+                }
             }
-            PUSH_STACK(cpu.GPR[inst.src]);
-            cpu.GPR[inst.src] = cpu.GPR[7];
-            cpu.GPR[7] = dstAddr;
             break;
         }
 
         case _rts:
         {
             cpu.GPR[7] = cpu.GPR[inst.dst];
-            POP_STACK(cpu.GPR[inst.dst]);
+            _pop(cpu.GPR + inst.dst);
             break;
         }
 
         case _reset:
         {
-            mem_mmu_reset();
-            dev_reset();
+            if(PSW_GET_CUR_MODE(cpu.PSW) == CPU_MODE_KERNEL)
+            {
+                mem_mmu_reset();
+                dev_reset();
+            }
+            break;
+        }
+
+        case _spl:
+        {
+            if(PSW_GET_CUR_MODE(cpu.PSW) == CPU_MODE_KERNEL)
+                _setPSW(PSW_SET_PRIORITY(cpu.PSW, inst.dst));
+            break;
+        }
+
+        case _rti:
+        {
+            cpu_word PC;
+            cpu_word psw;
+            if(_pop(&PC) && _pop(&psw))
+            {
+                psw &= PSW_MASK;
+                if(PSW_GET_CUR_MODE(cpu.PSW) == CPU_MODE_KERNEL)
+                {
+                    // When executed in Supervisor mode, the current and previous
+                    // mode bits in the restored PS cannot be Kernel. When executed in
+                    // User mode, the current and previous mode bits in the restored PS
+                    // can only be User. RTI cannot clear PS<11> if it was already set.
+                    // Apparently priority level is also not allowed to be lowered...
+                    psw = (psw & 0xF81F) | (cpu.PSW & 0xF8E0);
+                }
+
+                cpu.GPR[7] = PC;
+                _setPSW(psw);
+
+                // TODO: T bit
+            }
             break;
         }
 
