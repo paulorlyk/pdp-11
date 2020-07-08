@@ -25,6 +25,7 @@ void ts_destroyTask(ts_handle task);
 bool ts_isScheduled(ts_handle task);
 
 bool ts_schedule(ts_handle task, unsigned long int timeout_ns);
+bool ts_schedulePeriodic(ts_handle task, unsigned long int period_ns);
 
 void ts_cancel(ts_handle task);
 

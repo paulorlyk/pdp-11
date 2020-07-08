@@ -5,6 +5,7 @@
 #include "mem.h"
 #include "rk11.h"
 #include "dl11.h"
+#include "kw11.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -64,6 +65,10 @@ int main(void)
     mem_init(bootstrapBase, (uint8_t *)bootstrap, sizeof(bootstrap));
     dev_init();
 
+    if(!kw11_init())
+        return EXIT_FAILURE;
+    dev_registerDevice(kw11_getHandle());
+
     DL11 dl11 = dl11_init(0777560, 060, &terminalRx);
     if(!dl11)
         return EXIT_FAILURE;
@@ -103,6 +108,7 @@ int main(void)
     cpu_destroy();
     dl11_destroy(dl11);
     rk11_destroy();
+    kw11_destroy();
 
     ts_destroyTask(kbdTask);
 

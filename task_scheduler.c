@@ -15,7 +15,9 @@ struct _task
     ts_cb cb;
     void *arg;
     unsigned long int ts;
+    unsigned long int period;
     bool scheduled;
+    bool periodic;
     struct _task *next;
     struct _task *prev;
 };
@@ -78,6 +80,7 @@ bool ts_schedule(ts_handle task, unsigned long int timeout_ns)
 
     pTask->ts = _getMonotonicTS() + timeout_ns;
     pTask->scheduled = true;
+    pTask->periodic = false;
 
     struct _task **it = &task_sched.head;
     while(*it && (*it)->ts <= pTask->ts)
@@ -85,6 +88,22 @@ bool ts_schedule(ts_handle task, unsigned long int timeout_ns)
 
     pTask->next = *it;
     *it = pTask;
+
+    return true;
+}
+
+bool ts_schedulePeriodic(ts_handle task, unsigned long int period_ns)
+{
+    struct _task *pTask = (struct _task *)task;
+
+    if(!pTask)
+        return false;
+
+    if(!ts_schedule(task, period_ns))
+        return false;
+
+    pTask->periodic = true;
+    pTask->period = period_ns;
 
     return true;
 }
@@ -118,6 +137,9 @@ long int ts_run(void)
 
         pTask->next = NULL;
         pTask->scheduled = false;
+
+        if(pTask->periodic)
+            ts_schedulePeriodic(pTask, pTask->period);
 
         pTask->cb(pTask->arg);
     }

@@ -20,4 +20,5 @@ add_executable(pdp_11
         device.c
         dl11.h
         dl11.c
-        )
+        kw11.h
+        kw11.c)
