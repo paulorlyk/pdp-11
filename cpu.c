@@ -1303,7 +1303,12 @@ void cpu_run(void)
 
         case _mtpd: assert(false);
 
-        case _sxt: assert(false);
+        case _sxt:
+        {
+            cpu.GPR[inst.dst] = PSW_GET_N(cpu.PSW) ? 0xFFFF : 0;
+            _setFlags(PSW_GET_N(cpu.PSW), !PSW_GET_N(cpu.PSW), 0, PSW_GET_C(cpu.PSW));
+            break;
+        }
 
         case _mfps: assert(false);
 
