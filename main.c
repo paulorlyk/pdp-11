@@ -94,15 +94,18 @@ int main(void)
             i = 0;
         }
 
-        cpu_run();
-
-        const long int nSleepMax = 1 * TS_MICROSECONDS;
+        bool bCPUActive = cpu_run();
 
         long int nSleep = ts_run();
-        if(nSleep == 0 || nSleep > nSleepMax)
-            nSleep = nSleepMax;
+        if(!bCPUActive)
+        {
+            const long int nSleepMax = 10 * TS_MILLISECONDS;
 
-        //usleep(nSleepMax / TS_MICROSECONDS);
+            if(nSleep == 0 || nSleep > nSleepMax)
+                nSleep = nSleepMax;
+
+            usleep(nSleepMax / TS_MICROSECONDS);
+        }
     }
 
     cpu_destroy();

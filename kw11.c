@@ -56,16 +56,13 @@ static void _write(un_addr addr, cpu_word data, void* arg)
 
     if(!(kw11.SR & KW11_SR_IE))
         dev_clearIRQ(kw11.device);
-    else if(kw11.SR & KW11_SR_IM)
-        dev_setIRQ(kw11.device);
 }
 
 static cpu_word _irqACK(void* arg)
 {
     (void)arg;
 
-    // TODO: Implement
-    assert(false);
+    dev_clearIRQ(kw11.device);
 
     return KW11_IRQ;
 }
@@ -87,7 +84,7 @@ bool kw11_init(void)
         { KW11_ADDR, KW11_ADDR, &_read, &_write, NULL },
         { 0 }
     };
-    if(!(kw11.device = dev_initDevice(ioMap, KW11_IRQ_PRIORITY, &_irqACK, &_devReset, NULL)))
+    if(!(kw11.device = dev_initDevice("KW11", ioMap, KW11_IRQ_PRIORITY, &_irqACK, &_devReset, NULL)))
         return false;
 
     if(!(kw11.timerTask = ts_createTask(&_timeout, NULL)))
@@ -97,6 +94,7 @@ bool kw11_init(void)
         return false;
     }
 
+#if CONFIG_KW11_HZ
     if(!ts_schedulePeriodic(kw11.timerTask, (1.0 / CONFIG_KW11_HZ) * TS_SECONDS))
     {
         dev_destroyDevice(kw11.device);
@@ -107,6 +105,7 @@ bool kw11_init(void)
 
         return false;
     }
+#endif
 
     _devReset(NULL);
 

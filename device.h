@@ -25,6 +25,7 @@ typedef struct
 
 void dev_init(void);
 
+// name - pointer to statically allocated null-terminated string. Used for debugging purposes. May be NULL.
 // ioMap - array of dev_io_info structures terminated by element with NULL value in .rd and/or .wr fields.
 //      May be NULL if device does not have any memory mapped IO.
 //      Fields of dev_io_info must comply to the following requirements:
@@ -42,7 +43,8 @@ void dev_init(void);
 //          require any interrupts.
 // devReset - callback for UNIBUS INIT signal. May be NULL.
 // arg - argument with which irqACK and devReset callbacks will be invoked.
-device_handle dev_initDevice(const dev_io_info *ioMap,
+device_handle dev_initDevice(const char* name,
+                             const dev_io_info *ioMap,
                              int irqPriority,
                              irq_ack_cb irqACK,
                              dev_reset_cb devReset,
@@ -57,6 +59,8 @@ void dev_deregisterDevice(device_handle device);
 void dev_setIRQ(device_handle device);
 
 void dev_clearIRQ(device_handle device);
+
+const char* dev_getName(device_handle device);
 
 void dev_reset(void);
 

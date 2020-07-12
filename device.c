@@ -11,6 +11,7 @@
 
 struct _device
 {
+    const char *name;
     dev_io_info *ioMap;
     int irqPriority;
     irq_ack_cb irqACK;
@@ -50,7 +51,8 @@ void dev_init(void)
     memset(&devices, 0, sizeof(devices));
 }
 
-device_handle dev_initDevice(const dev_io_info *ioMap,
+device_handle dev_initDevice(const char* name,
+                             const dev_io_info *ioMap,
                              int irqPriority,
                              irq_ack_cb irqACK,
                              dev_reset_cb devReset,
@@ -93,6 +95,7 @@ device_handle dev_initDevice(const dev_io_info *ioMap,
         memcpy(pDev->ioMap, ioMap, sizeof(dev_io_info) * ioMapLen);
     }
 
+    pDev->name = name ? name : "<unknown>";
     pDev->irqPriority = irqPriority;
     pDev->irqACK = irqACK;
     pDev->devReset = devReset;
@@ -187,6 +190,16 @@ void dev_clearIRQ(device_handle device)
 
     if(devices.curDevIRQ == pDev)
         _updateIRQ();
+}
+
+const char* dev_getName(device_handle device)
+{
+    struct _device *pDev = (struct _device *)device;
+
+    if(!pDev)
+        return NULL;
+
+    return pDev->name;
 }
 
 void dev_reset(void)

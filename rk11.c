@@ -56,7 +56,7 @@
 #define RK11_RKDS_SOK               (1 << 8)
 #define RK11_RKDS_RK05              (1 << 11)
 #define RK11_RKDS_DRIVE_MASK        0xE000
-#define RK11_RKDS_SET_DRIVE(drv)   ((drv) & 7) << 13)
+#define RK11_RKDS_SET_DRIVE(rkds, drv)   ((rkds) = ((rkds) & ~RK11_RKDS_DRIVE_MASK) | (((drv) & 7) << 13))
 
 // RKER - Error Register
 // Bit  Designation
@@ -587,8 +587,25 @@ static cpu_word _irqACK(void* arg)
 {
     (void)arg;
 
-    // TODO: Implement
-    assert(false);
+    if(!rk11.bINT)
+    {
+        for(int i = 0; i < RK05_DISKS_MAX; ++i)
+        {
+            if(rk11.disks[i].bINT)
+            {
+                RK11_RKDS_SET_DRIVE(rk11.regs[RK11_RKDS], i);
+                rk11.disks[i].bINT = false;
+                break;
+            }
+        }
+    }
+    else
+    {
+        RK11_RKDS_SET_DRIVE(rk11.regs[RK11_RKDS], rk11.currentDrive);
+        rk11.bINT = false;
+    }
+
+    _updateInterrupts();
 
     return RK11_IRQ;
 }
@@ -611,7 +628,7 @@ bool rk11_init(void)
         { RK11_PERIPH_START, RK11_PERIPH_END, &_read, &_write, NULL },
         { 0 }
     };
-    if(!(rk11.device = dev_initDevice(ioMap, RK11_IRQ_PRIORITY, &_irqACK, &_devReset, NULL)))
+    if(!(rk11.device = dev_initDevice("RK11", ioMap, RK11_IRQ_PRIORITY, &_irqACK, &_devReset, NULL)))
         return false;
 
     for(int i = 0; i < RK05_DISKS_MAX; ++i)

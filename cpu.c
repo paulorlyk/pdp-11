@@ -42,6 +42,8 @@ static struct
 
     cpu_word regSet[2][8];
     cpu_word lastSP[4];
+
+    bool wait;
 } cpu;
 
 enum _opcode
@@ -120,9 +122,11 @@ enum _opcode
     _reset      = 0x0005,   // RESET    Sends INIT on the UNIBUS for 10ms
     _spl        = 0x0098,   // SPL      Set priority level
     _rti        = 0x0002,   // RTI      Return from Interrupt
+    _wait       = 0x0001,   // WAIT     Wait for Interrupt
+    _emt        = 0x8800,   // EMT      Emulator Trap
+    _trap_op    = 0x8900,   // TRAP     Trap
 
     // 000000   HALT     Halt
-    // 000001   WAIT     Wait for Interrupt
     // 000003   BPT      Breakpoint Trap
     // 000004   IOT      I/O Trap
     // 000006   RTT      Return from Interrupt
@@ -141,13 +145,6 @@ enum _opcode
     // 000264   SEZ      Set Z
     // 000270   SEN      Set N
     // 000277   SCC      Set all condition codes
-
-    // 104000   EMT      Emulator Trap
-    //    ...
-    // 104377   EMT      Emulator Trap
-    // 104400   TRAP     Trap
-    //    ...
-    // 104777   TRAP     Trap
 
     // 007000   CSM      Call to Supervisor Mode (PDP-11/44 only)
 
@@ -295,8 +292,10 @@ static void _decode(cpu_word inst, struct _instruction* pInst)
                     // 1040     EMT
                     // 1044     TRAP
 
-                    DEBUG("UNKNOWN INSTRUCTION: 0%06o", inst);
-                    assert(false);
+                    //DEBUG("Decoder: EMT/TRAP instruction");
+
+                    pInst->type = _instt_system;
+                    pInst->opcode = inst & 0x8900;
                 }
             }
             else if((inst & 0x7E00) == 0x0E00)    // x000 111x xxxx xxxx
@@ -554,6 +553,8 @@ static const char* _formatInstruction(cpu_addr pc, cpu_word instWord, const stru
 {
     static char res[256] = "";
 
+    pc -= 2;
+
     int pos = sprintf(res, "%06o: %06o\t%s", pc, instWord, cpu.arrOpcodeNameLUT[pInst->opcode]);
 
     switch(pInst->type)
@@ -736,25 +737,33 @@ static void _setPSW(cpu_word psw)
 
 static void _trap(cpu_word vec)
 {
-    DEBUG("TRAP %u", vec);
+    DEBUG("TRAP %u @ 0%06o", vec, cpu.GPR[7]);
 
-    if(!_push(cpu.PSW) || !_push(cpu.GPR[7]))
+    // TODO: Debug
+    //cpu.bDisassemblyOutput = true;
+
+    cpu.wait = false;
+
+    cpu_word newPC;
+    cpu_word newPSW;
+    if(   !_read(vec, false, cpu_space_D, cpu_mode_Kernel, &newPC)
+       || !_read(vec + 2, false, cpu_space_D, cpu_mode_Kernel, &newPSW))
     {
         // TODO: Trap from trap
         assert(false);
     }
 
-    cpu_word trapPC;
-    cpu_word trapPSW;
-    if(   !_read(vec, false, cpu_space_D, cpu_mode_Kernel, &trapPC)
-       || !_read(vec + 2, false, cpu_space_D, cpu_mode_Kernel, &trapPSW))
+    cpu_word oldPSW = cpu.PSW;
+    cpu_word oldPC = cpu.GPR[7];
+
+    _setPSW(PSW_SET_PREV_MODE(newPSW, PSW_GET_CUR_MODE(cpu.PSW)));
+    cpu.GPR[7] = newPC;
+
+    if(!_push(oldPSW) || !_push(oldPC))
     {
         // TODO: Trap from trap
         assert(false);
     }
-
-    _setPSW(PSW_SET_PREV_MODE(trapPSW, PSW_GET_CUR_MODE(cpu.PSW)));
-    cpu.GPR[7] = trapPC;
 }
 
 static void _initNameLUT(void)
@@ -863,6 +872,9 @@ static void _initNameLUT(void)
     cpu.arrOpcodeNameLUT[_reset]  = "RESET";
     cpu.arrOpcodeNameLUT[_spl]    = "SPL";
     cpu.arrOpcodeNameLUT[_rti]    = "RTI";
+    cpu.arrOpcodeNameLUT[_wait]   = "WAIT";
+    cpu.arrOpcodeNameLUT[_emt]    = "EMT";
+    cpu.arrOpcodeNameLUT[_trap_op]= "TRAP";
 }
 
 static cpu_word _cpuDeviceRead(un_addr addr, void* arg)
@@ -922,7 +934,7 @@ bool cpu_init(cpu_word R7)
         { 0777570, 0777570, &_cpuDeviceRead, &_cpuDeviceWrite, NULL },
         { 0 }
     };
-    if(!(cpu.device = dev_initDevice(ioMap, 0, NULL, NULL, NULL)))
+    if(!(cpu.device = dev_initDevice("CPU", ioMap, 0, NULL, NULL, NULL)))
         return false;
 
     cpu.GPR[7] = R7;
@@ -942,15 +954,45 @@ device_handle cpu_getHandle(void)
     return cpu.device;
 }
 
-void cpu_run(void)
+static void _printInstructionAt(cpu_addr addr)
+{
+    cpu_word pc = cpu.GPR[7];
+    cpu.GPR[7] = addr;
+
+    cpu_word instWord;
+    _fetchPC(&instWord);
+
+    struct _instruction inst = {0};
+    _decode(instWord, &inst);
+
+    DEBUG("%s", _formatInstruction(cpu.GPR[7], instWord, &inst));
+
+    cpu.GPR[7] = pc;
+}
+
+bool cpu_run(void)
 {
     // TODO: Debug
-    //if(cpu.GPR[7] == 0137176)
-    {
-    //    cpu.bDisassemblyOutput = true;
-    }
+//    if(cpu.GPR[7] == 014130)
+//    {
+//        _printInstructionAt(02630);
+//
+//        cpu.bDisassemblyOutput = true;
+//    }
 
     // TODO: Check for pre-existing traps
+
+    device_handle hIRQDev = dev_getIRQ(PSW_GET_PRIORITY(cpu.PSW));
+    if(hIRQDev)
+    {
+        cpu_word vec = dev_ackIRQ(hIRQDev);
+
+        DEBUG("Processing IRQ from device: %s, vector: 0%03o", dev_getName(hIRQDev), vec);
+
+        _trap(vec);
+    }
+    else if(cpu.wait)
+        return false;
 
     // MMR1 records any auto increment/decrement of the general purpose
     // registers, including explicit references through the PC. MMR1 is
@@ -970,7 +1012,7 @@ void cpu_run(void)
 
     cpu_word instWord;
     if(!_fetchPC(&instWord))
-        return;
+        return !cpu.wait;
 
     //DEBUG("Instruction fetch: 0%06o: 0%06o", cpu.GPR[7] - 2, instWord);
 
@@ -979,7 +1021,7 @@ void cpu_run(void)
 
     if(cpu.bDisassemblyOutput)
     {
-        DEBUG("%s", _formatInstruction(cpu.GPR[7] - 2, instWord, &inst));
+        DEBUG("%s", _formatInstruction(cpu.GPR[7], instWord, &inst));
 
         // TODO: Debug
         //int dbg = 0;
@@ -1062,7 +1104,7 @@ void cpu_run(void)
             if(   _load(inst.srcMode, inst.src, false, &srcAddr, &srcVal)
                && _load(inst.dstMode, inst.dst, false, &dstAddr, &dstVal))
             {
-                uint32_t res = srcVal + dstVal;
+                uint32_t res = (uint32_t)srcVal + dstVal;
                 if(_store(dstAddr, res))
                     _setFlags(res & 0x8000, !res, CALC_V(srcVal, dstVal, res), res & 0x10000);
             }
@@ -1074,7 +1116,7 @@ void cpu_run(void)
             if(   _load(inst.srcMode, inst.src, false, &srcAddr, &srcVal)
                && _load(inst.dstMode, inst.dst, false, &dstAddr, &dstVal))
             {
-                uint32_t res = dstVal - srcVal;
+                uint32_t res = (uint32_t)dstVal - srcVal;
                 if(_store(dstAddr, res))
                     _setFlags(res & 0x8000, !res, CALC_V(srcVal, dstVal, res), res & 0x10000);
             }
@@ -1166,7 +1208,42 @@ void cpu_run(void)
             break;
         }
 
-        case _ashc: assert(false);
+        case _ashc:
+        {
+            if(!_load(inst.srcMode, inst.src, false, &srcAddr, &srcVal))
+                break;
+
+            uint64_t dest = (((uint64_t)cpu.GPR[inst.reg]) << 16) | cpu.GPR[inst.reg | 1];
+
+            // The shift bits count ranges from -32 (right shift)
+            // to +31 (left shift). Choose 64bit uints here to
+            // avoid undefined behavior while shifting.
+            uint64_t res = dest;
+            bool c = PSW_GET_C(cpu.PSW);
+
+            if(srcVal & 0x0020)
+            {
+                // Negative - right shift
+                int n = 0x0040 - (srcVal & 0x003F);
+                res >>= n;
+                if(dest & 0x80000000)
+                    res |= ~(0x7FFFFFFFULL >> n);
+                c = dest & (1ULL << (n - 1));
+            }
+            else if(srcVal & 0x003F)
+            {
+                // Positive - right shift
+                int n = srcVal & 0x003F;
+                res <<= n;
+                c = dest & (0x80000000ULL >> (n - 1));
+            }
+
+            cpu.GPR[inst.reg] = res >> 16;
+            cpu.GPR[inst.reg | 1] = res & 0xFFFF;
+
+            _setFlags(res & 0x80000000, !(res & 0xFFFFFFFF), (res ^ dest) & 0x80000000, c);
+            break;
+        }
 
         case _xor: assert(false);
 
@@ -1185,7 +1262,7 @@ void cpu_run(void)
         {
             if(_load(inst.dstMode, inst.dst, false, &dstAddr, &dstVal))
             {
-                uint32_t res = (dstVal << 8) | (dstVal >> 8);
+                cpu_word res = (dstVal << 8) | (dstVal >> 8);
                 if(_store(dstAddr, res))
                     _setFlags(res & 0x0080, !(res & 0xFF), 0, 0);
             }
@@ -1218,17 +1295,53 @@ void cpu_run(void)
             break;
         }
 
-        case _dec: assert(false);
-        case _decb: assert(false);
+        case _dec:
+        case _decb:
+        {
+            if(_load(inst.dstMode, inst.dst, byteFlag, &dstAddr, &dstVal))
+            {
+                --dstVal;
+                if(_store(dstAddr, dstVal))
+                    _setFlags(dstVal & 0x8000, !dstVal, dstVal == 0x7FFF, PSW_GET_C(cpu.PSW));
+            }
+            break;
+        }
 
-        case _neg: assert(false);
-        case _negb: assert(false);
+        case _neg:
+        case _negb:
+        {
+            if(_load(inst.dstMode, inst.dst, byteFlag, &dstAddr, &dstVal))
+            {
+                cpu_word res = ~dstVal + 1;
+                if(_store(dstAddr, res))
+                    _setFlags(res & 0x8000, !res, res == 0x8000, res);
+            }
+            break;
+        }
 
-        case _adc: assert(false);
-        case _adcb: assert(false);
+        case _adc:
+        case _adcb:
+        {
+            if(_load(inst.dstMode, inst.dst, byteFlag, &dstAddr, &dstVal))
+            {
+                uint32_t res = (uint32_t)dstVal + PSW_GET_C(cpu.PSW);
+                if(_store(dstAddr, res))
+                    _setFlags(res & 0x8000, !res, dstVal == 0x7FFF && PSW_GET_C(cpu.PSW), dstVal == 0xFFFF && PSW_GET_C(cpu.PSW));
+            }
+            break;
+        }
 
-        case _sbc: assert(false);
-        case _sbcb: assert(false);
+        case _sbc:
+        case _sbcb:
+        {
+            if(_load(inst.dstMode, inst.dst, byteFlag, &dstAddr, &dstVal))
+            {
+                uint32_t res = (uint32_t)dstVal - PSW_GET_C(cpu.PSW);
+                if(_store(dstAddr, res))
+                    _setFlags(res & 0x8000, !res, res == 0x8000, res || !PSW_GET_C(cpu.PSW));
+            }
+            break;
+        }
 
         case _tst:
         case _tstb:
@@ -1244,8 +1357,21 @@ void cpu_run(void)
         case _rol: assert(false);
         case _rolb: assert(false);
 
-        case _asr: assert(false);
-        case _asrb: assert(false);
+        case _asr:
+        case _asrb:
+        {
+            if(_load(inst.dstMode, inst.dst, byteFlag, &dstAddr, &dstVal))
+            {
+                cpu_word res = (dstVal >> 1) | (dstVal & 0x8000);
+                if(_store(dstAddr, res))
+                {
+                    bool n = res & 0x8000;
+                    bool c = dstVal & 1;
+                    _setFlags(n, !res, n != c, c);
+                }
+            }
+            break;
+        }
 
         case _asl:
         case _aslb:
@@ -1318,10 +1444,10 @@ void cpu_run(void)
         case _bge:  BRANCH_IF(PSW_GET_N(cpu.PSW) == PSW_GET_V(cpu.PSW),                          inst.offset); break;
         case _blt:  BRANCH_IF(PSW_GET_N(cpu.PSW) != PSW_GET_V(cpu.PSW),                          inst.offset); break;
         case _bgt:  BRANCH_IF(!PSW_GET_Z(cpu.PSW) && (PSW_GET_N(cpu.PSW) == PSW_GET_V(cpu.PSW)), inst.offset); break;
-        case _ble:  BRANCH_IF(!PSW_GET_Z(cpu.PSW) && (PSW_GET_N(cpu.PSW) != PSW_GET_V(cpu.PSW)), inst.offset); break;
+        case _ble:  BRANCH_IF(PSW_GET_Z(cpu.PSW) || (PSW_GET_N(cpu.PSW) != PSW_GET_V(cpu.PSW)),  inst.offset); break;
         case _bpl:  BRANCH_IF(!PSW_GET_N(cpu.PSW),                                               inst.offset); break;
         case _bmi:  BRANCH_IF(PSW_GET_N(cpu.PSW),                                                inst.offset); break;
-        case _bhi:  BRANCH_IF(!(PSW_GET_C(cpu.PSW) || PSW_GET_Z(cpu.PSW)),                       inst.offset); break;
+        case _bhi:  BRANCH_IF(!(PSW_GET_C(cpu.PSW) && !PSW_GET_Z(cpu.PSW)),                      inst.offset); break;
         case _blos: BRANCH_IF(PSW_GET_C(cpu.PSW) || PSW_GET_Z(cpu.PSW),                          inst.offset); break;
         case _bvc:  BRANCH_IF(!PSW_GET_V(cpu.PSW),                                               inst.offset); break;
         case _bvs:  BRANCH_IF(PSW_GET_V(cpu.PSW),                                                inst.offset); break;
@@ -1392,7 +1518,7 @@ void cpu_run(void)
             if(_pop(&PC) && _pop(&psw))
             {
                 psw &= PSW_MASK;
-                if(PSW_GET_CUR_MODE(cpu.PSW) == CPU_MODE_KERNEL)
+                if(PSW_GET_CUR_MODE(cpu.PSW) != CPU_MODE_KERNEL)
                 {
                     // When executed in Supervisor mode, the current and previous
                     // mode bits in the restored PS cannot be Kernel. When executed in
@@ -1410,9 +1536,29 @@ void cpu_run(void)
             break;
         }
 
+        case _wait:
+        {
+            cpu.wait = true;
+            break;
+        }
+
+        case _emt:
+        {
+            _trap(24);
+            break;
+        }
+
+        case _trap_op:
+        {
+            _trap(28);
+            break;
+        }
+
         default:
             DEBUG("UNIMPLEMENTED INSTRUCTION: 0%06o: 0%06o", cpu.GPR[7] - 2, instWord);
             assert(false);
             break;
     }
+
+    return !cpu.wait;
 }

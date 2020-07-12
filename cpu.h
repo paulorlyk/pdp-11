@@ -87,6 +87,6 @@ void cpu_destroy(void);
 
 device_handle cpu_getHandle(void);
 
-void cpu_run(void);
+bool cpu_run(void);
 
 #endif //CPU_H_63FF543D3CE340CEA2683539FDDB2A0E

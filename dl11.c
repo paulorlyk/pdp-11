@@ -189,6 +189,10 @@ static void _write(un_addr addr, cpu_word data, void* arg)
     {
         case DL11_RCSR:
             //DEBUG("DL11: Writing RCSR: 0%06o", data);
+
+            assert(!(data & DL11_RCSR_DATASET_INT_ENB));
+            assert(!(data & DL11_RCSR_RCVR_INT_ENB));
+
             pDev->regs[DL11_RCSR] = data & DL11_RCSR_WR_MASK;
 
             if(data & DL11_RCSR_RDR_ENB)
@@ -208,6 +212,9 @@ static void _write(un_addr addr, cpu_word data, void* arg)
 
         case DL11_XCSR:
             //DEBUG("DL11: Writing XCSR: 0%06o", data);
+
+            assert(!(data & DL11_XCSR_XMIT_INT_ENB));
+
             pDev->regs[DL11_XCSR] = data & DL11_XCSR_WR_MASK;
 
             if(data & DL11_XCSR_MAINT)
@@ -309,7 +316,7 @@ DL11 dl11_init(un_addr baseAddr, cpu_word baseVector, dl11_tx_cb tx)
         { baseAddr, baseAddr + 6, &_read, &_write, pDev },
         { 0 }
     };
-    if(!(pDev->device = dev_initDevice(ioMap, DL11_IRQ_PRIORITY, &_irqACK, &_devReset, pDev)))
+    if(!(pDev->device = dev_initDevice("DL11", ioMap, DL11_IRQ_PRIORITY, &_irqACK, &_devReset, pDev)))
     {
         free(pDev);
         return NULL;
