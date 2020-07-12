@@ -1014,7 +1014,7 @@ void cpu_run(void)
                && _load(inst.dstMode, inst.dst, byteFlag, &dstAddr, &dstVal))
             {
                 int32_t res = srcVal - dstVal;
-                _setFlags(res < 0, !res, CALC_V(srcVal, dstVal, res), res & 0x10000);
+                _setFlags(res & 0x8000, !res, CALC_V(srcVal, dstVal, res), res & 0x10000);
             }
             break;
         }
