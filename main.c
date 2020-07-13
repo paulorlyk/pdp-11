@@ -94,10 +94,8 @@ int main(void)
             i = 0;
         }
 
-        bool bCPUActive = cpu_run();
-
         long int nSleep = ts_run();
-        if(!bCPUActive)
+        if(!cpu_run())
         {
             const long int nSleepMax = 10 * TS_MILLISECONDS;
 

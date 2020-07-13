@@ -254,7 +254,7 @@ static int _fetchPC(cpu_word* data)
     return 2;
 }
 
-static void _decode(cpu_word inst, struct _instruction* pInst)
+static bool _decode(cpu_word inst, struct _instruction* pInst)
 {
     // TODO: Debug
     pInst->opcode = 0xFFFFFF;
@@ -440,8 +440,9 @@ static void _decode(cpu_word inst, struct _instruction* pInst)
         }
         else    // 1111 xxxx xxxx xxxx
         {
-            DEBUG("UNKNOWN INSTRUCTION: 0%06o", inst);
-            assert(false);
+            // TODO: Floating point instructions
+            DEBUG("FPP INSTRUCTION: 0%06o", inst);
+            return false;
         }
     }
     else    // xIII xxxx xxxx xxxx; III != 0 && III != 7
@@ -474,6 +475,8 @@ static void _decode(cpu_word inst, struct _instruction* pInst)
         DEBUG("UNKNOWN INSTRUCTION: 0%06o", inst);
         assert(false);
     }
+
+    return true;
 }
 
 static const char* _formatInstructionOperand(enum _addressingMode mode, int reg, cpu_addr *pc)
@@ -891,6 +894,9 @@ static cpu_word _cpuDeviceRead(un_addr addr, void* arg)
 
         case 0777570:   // Console Switch & Display Register
             return 0;
+
+//        case 0777764:   // System I/D Register
+//            return 1;
     }
 
     assert(false);
@@ -917,6 +923,9 @@ static void _cpuDeviceWrite(un_addr addr, cpu_word data, void* arg)
         case 0777570:   // Console Switch & Display Register
             DEBUG("DISPLAY: 0x%04X", data);
             break;
+
+//        case 0777764:   // System I/D Register
+//            break;
     }
 }
 
@@ -930,8 +939,9 @@ bool cpu_init(cpu_word R7)
     _initNameLUT();
 
     dev_io_info ioMap[] = {
-        { 0777776, 0777776, &_cpuDeviceRead, &_cpuDeviceWrite, NULL },
-        { 0777570, 0777570, &_cpuDeviceRead, &_cpuDeviceWrite, NULL },
+        { 0777776, 0777776, &_cpuDeviceRead, &_cpuDeviceWrite, NULL },  // PS
+        { 0777570, 0777570, &_cpuDeviceRead, &_cpuDeviceWrite, NULL },  // Console Switch & Display Register
+//        { 0777764, 0777764, &_cpuDeviceRead, &_cpuDeviceWrite, NULL },  // System I/D Register
         { 0 }
     };
     if(!(cpu.device = dev_initDevice("CPU", ioMap, 0, NULL, NULL, NULL)))
@@ -973,11 +983,10 @@ static void _printInstructionAt(cpu_addr addr)
 bool cpu_run(void)
 {
     // TODO: Debug
-//    if(cpu.GPR[7] == 014130)
+//    if(cpu.GPR[7] == 000554 && b0117600)
 //    {
-//        _printInstructionAt(02630);
-//
-//        cpu.bDisassemblyOutput = true;
+//        //cpu.bDisassemblyOutput = true;
+//        DEBUG("debug");
 //    }
 
     // TODO: Check for pre-existing traps
@@ -1017,15 +1026,22 @@ bool cpu_run(void)
     //DEBUG("Instruction fetch: 0%06o: 0%06o", cpu.GPR[7] - 2, instWord);
 
     struct _instruction inst = {0};
-    _decode(instWord, &inst);
-
-    if(cpu.bDisassemblyOutput)
+    if(!_decode(instWord, &inst))
     {
-        DEBUG("%s", _formatInstruction(cpu.GPR[7], instWord, &inst));
-
-        // TODO: Debug
-        //int dbg = 0;
+        DEBUG("UNKNOWN INSTRUCTION: 0%06o: 0%06o", cpu.GPR[7] - 2, instWord);
+        _trap(8);
+        return !cpu.wait;
     }
+
+    // TODO: Debug
+//    if(cpu.bDisassemblyOutput)
+//    {
+//        static int ctr = -19;
+//        DEBUG("%d %s", ctr++, _formatInstruction(cpu.GPR[7], instWord, &inst));
+//
+//        if(ctr >= 2000)
+//            DEBUG("debug");
+//    }
 
     cpu_word srcVal = 0;
     operand_addr srcAddr = 0;
@@ -1055,7 +1071,7 @@ bool cpu_run(void)
             if(   _load(inst.srcMode, inst.src, byteFlag, &srcAddr, &srcVal)
                && _load(inst.dstMode, inst.dst, byteFlag, &dstAddr, &dstVal))
             {
-                int32_t res = srcVal - dstVal;
+                uint32_t res = (uint32_t)srcVal - dstVal;
                 _setFlags(res & 0x8000, !res, CALC_V(srcVal, dstVal, res), res & 0x10000);
             }
             break;
@@ -1118,7 +1134,7 @@ bool cpu_run(void)
             {
                 uint32_t res = (uint32_t)dstVal - srcVal;
                 if(_store(dstAddr, res))
-                    _setFlags(res & 0x8000, !res, CALC_V(srcVal, dstVal, res), res & 0x10000);
+                    _setFlags(res & 0x8000, !res, CALC_V(dstVal, srcVal, res), res & 0x10000);
             }
             break;
         }
@@ -1239,7 +1255,7 @@ bool cpu_run(void)
             }
 
             cpu.GPR[inst.reg] = res >> 16;
-            cpu.GPR[inst.reg | 1] = res & 0xFFFF;
+            cpu.GPR[inst.reg | 1] = res;
 
             _setFlags(res & 0x80000000, !(res & 0xFFFFFFFF), (res ^ dest) & 0x80000000, c);
             break;
@@ -1378,7 +1394,7 @@ bool cpu_run(void)
         {
             if(_load(inst.dstMode, inst.dst, byteFlag, &dstAddr, &dstVal))
             {
-                uint32_t res = ((uint32_t)dstVal) << 1;
+                uint32_t res = (uint32_t)dstVal << 1;
                 if(_store(dstAddr, res))
                 {
                     bool n = res & 0x8000;
@@ -1399,7 +1415,12 @@ bool cpu_run(void)
                 break;
 
             if(dstAddr & OPERAND_TYPE_REG)
+            {
+                cpu_word psw = cpu.PSW;
+                _setPSW(PSW_SET_CUR_MODE(psw, PSW_GET_PREV_MODE(psw)));
                 dstVal = cpu.GPR[inst.dst];
+                _setPSW(psw);
+            }
             else if(!_read(dstAddr, false, cpu_space_I, PSW_GET_PREV_MODE(cpu.PSW), &dstVal))
                 break;
 
@@ -1419,7 +1440,12 @@ bool cpu_run(void)
             }
 
             if(dstAddr & OPERAND_TYPE_REG)
+            {
+                cpu_word psw = cpu.PSW;
+                _setPSW(PSW_SET_CUR_MODE(psw, PSW_GET_PREV_MODE(psw)));
                 cpu.GPR[inst.dst] = dstVal;
+                _setPSW(psw);
+            }
             else if(!_write(dstAddr, false, dstVal, cpu_space_I, PSW_GET_PREV_MODE(cpu.PSW)))
                 break;
 
@@ -1532,7 +1558,10 @@ bool cpu_run(void)
                 _setPSW(psw);
 
                 // TODO: T bit
+                assert(PSW_GET_TRAP(cpu.PSW) == 0);
             }
+
+            //DEBUG("RTI to 0%06o", cpu.GPR[7]);
             break;
         }
 

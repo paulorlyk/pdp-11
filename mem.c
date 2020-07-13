@@ -150,7 +150,7 @@ static void _mmuRegWritePDR(un_addr addr, cpu_word data, void* arg)
     mem.mmu.PDR[pRG->m][pRG->s][nReg] = data & PDR_WR_MASK;
 }
 
-static cpu_word _mmuRead(un_addr addr, void* arg)
+static cpu_word _regRead(un_addr addr, void* arg)
 {
     (void)arg;
 
@@ -167,13 +167,19 @@ static cpu_word _mmuRead(un_addr addr, void* arg)
 
         case 0772516:   // MMR3
             return mem.mmu.MMR[3];
+
+//        case 0777760:   // Lower Size Register
+//            return (MEM_SIZE_BYTES >> 6) - 1;
+//
+//        case 0777762:   // Upper Size Register
+//            return 0;
     }
 
     assert(false);
     return 0;
 }
 
-static void _mmuWrite(un_addr addr, cpu_word data, void* arg)
+static void _regWrite(un_addr addr, cpu_word data, void* arg)
 {
     (void)arg;
 
@@ -200,6 +206,10 @@ static void _mmuWrite(un_addr addr, cpu_word data, void* arg)
             assert(!(data & MMU_MMR3_UB_MAP_REL));  // TODO: Implement
             mem.mmu.MMR[3] = data & MMU_MMR3_WR_MASK;
             break;
+
+//        case 0777760:   // Lower Size Register
+//        case 0777762:   // Upper Size Register
+//            break;
     }
 }
 
@@ -337,8 +347,9 @@ void mem_init(ph_addr base, const uint8_t* buf, ph_size size)
     memset(&mem, 0, sizeof(mem));
 
     // Memory management registers
-    mem_registerUnibusIO(0777572, 0777576, &_mmuRead, &_mmuWrite, NULL);  // MMR0 - MMR2
-    mem_registerUnibusIO(0772516, 0772516, &_mmuRead, &_mmuWrite, NULL);  // MMR3
+    mem_registerUnibusIO(0777572, 0777576, &_regRead, &_regWrite, NULL);  // MMR0 - MMR2
+    mem_registerUnibusIO(0772516, 0772516, &_regRead, &_regWrite, NULL);  // MMR3
+//    mem_registerUnibusIO(0777760, 0777762, &_regRead, &_regWrite, NULL);  // Lower and Upper Size Register
 
     for(size_t i = 0; i < sizeof(mmuGegGroupsTable[0]) / sizeof(mmuGegGroupsTable[0][0]); ++i)
     {

@@ -395,8 +395,34 @@ static void _diskTaskCb(void *arg)
     {
         case RK11_RKCS_FUNC_WRITE:
         {
-            // TODO: Not implemented
-            assert(false);
+            // TODO: Implement format
+            if(rk11.regs[RK11_RKCS] & RK11_RKCS_FMT)
+            {
+                DEBUG("RK11: Format bit is set in RKCS");
+                assert(false);
+            }
+
+            DEBUG("RK11: Writing %lu words to disk %d, cyl %d surf %d sect %d [img 0x%lX] from memory location 0%06o",
+                  nWordsCount, rk11.currentDrive, disk->nCylinder, disk->nSurface, disk->nSector, nDiskWord * 2, addr);
+//            DEBUG("RK11: Writing %lu words to disk [img 0x%06lX] from memory location 0%06o", nWordsCount, nDiskWord * 2, addr);
+
+            for(nWordsDone = 0; nWordsDone < nWordsCount; ++nWordsDone)
+            {
+                cpu_word w;
+                if((w = mem_readUnibus(addr)) & MEM_HAS_ERR)
+                {
+                    rk11.regs[RK11_RKER] |= RK11_RKER_NXM;
+                    break;
+                }
+
+                *data++ = w;
+
+                if(!(rk11.regs[RK11_RKCS] & RK11_RKCS_IBA))
+                    addr += MEM_WORD_SIZE;
+
+                // TODO: Write back to the image file
+            }
+
             break;
         }
 
@@ -411,6 +437,7 @@ static void _diskTaskCb(void *arg)
 
             DEBUG("RK11: Reading %lu words from disk %d, cyl %d surf %d sect %d [img 0x%lX] to memory location 0%06o",
                   nWordsCount, rk11.currentDrive, disk->nCylinder, disk->nSurface, disk->nSector, nDiskWord * 2, addr);
+//            DEBUG("RK11: Reading %lu words from disk [img 0x%06lX] to memory location 0%06o", nWordsCount, nDiskWord * 2, addr);
 
             for(nWordsDone = 0; nWordsDone < nWordsCount; ++nWordsDone)
             {
@@ -533,7 +560,7 @@ static void _write(un_addr addr, cpu_word data, void* arg)
     {
         case RK11_REG_RKCS:
         {
-            DEBUG("RK11: Writing RKCS: 0%06o", data);
+            //DEBUG("RK11: Writing RKCS: 0%06o", data);
 
             bool bIDE = (rk11.regs[RK11_RKCS] & RK11_RKCS_IDE) != 0;
 
@@ -562,18 +589,20 @@ static void _write(un_addr addr, cpu_word data, void* arg)
         }
 
         case RK11_REG_RKWC:
-            DEBUG("RK11: Writing RKWC: 0%06o", data);
+            //DEBUG("RK11: Writing RKWC: 0%06o", data);
+
             rk11.regs[RK11_RKWC] = data;
             break;
 
         case RK11_REG_RKBA:
-            DEBUG("RK11: Writing RKBA: 0%06o", data);
+            //DEBUG("RK11: Writing RKBA: 0%06o", data);
+
             rk11.regs[RK11_RKBA] = data & 0xFFFE;
             break;
 
         case RK11_REG_RKDA:
         {
-            DEBUG("RK11: Writing RKDA: 0%06o", data);
+            //DEBUG("RK11: Writing RKDA: 0%06o", data);
 
             if(rk11.regs[RK11_RKCS] & RK11_RKCS_RDY)
                 rk11.regs[RK11_RKDA] = data;
