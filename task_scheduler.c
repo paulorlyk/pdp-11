@@ -4,7 +4,6 @@
 
 #include "task_scheduler.h"
 
-#include <assert.h>
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
@@ -33,6 +32,27 @@ static unsigned long int _getMonotonicTS(void)
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (unsigned long int)ts.tv_sec * 1000000000UL + ts.tv_nsec;
 }
+
+static void _schedule(struct _task *pTask, unsigned long int timeout_ns)
+{
+    pTask->ts = _getMonotonicTS() + timeout_ns;
+    pTask->scheduled = true;
+
+    struct _task **it = &task_sched.head;
+    while(*it && (*it)->ts <= pTask->ts)
+        it = &(*it)->next;
+
+    pTask->next = *it;
+    if(*it)
+    {
+        pTask->prev = (*it)->prev;
+        (*it)->prev = pTask;
+    }
+    else
+        pTask->prev = NULL;
+    *it = pTask;
+}
+
 
 void ts_init(void)
 {
@@ -78,32 +98,24 @@ bool ts_schedule(ts_handle task, unsigned long int timeout_ns)
     if(!pTask || pTask->scheduled)
         return false;
 
-    pTask->ts = _getMonotonicTS() + timeout_ns;
-    pTask->scheduled = true;
     pTask->periodic = false;
-
-    struct _task **it = &task_sched.head;
-    while(*it && (*it)->ts <= pTask->ts)
-        it = &(*it)->next;
-
-    pTask->next = *it;
-    *it = pTask;
+    _schedule(pTask, timeout_ns);
 
     return true;
 }
 
 bool ts_schedulePeriodic(ts_handle task, unsigned long int period_ns)
 {
-    struct _task *pTask = (struct _task *)task;
-
-    if(!pTask)
+    if(!period_ns)
         return false;
 
-    if(!ts_schedule(task, period_ns))
+    struct _task *pTask = (struct _task *)task;
+    if(!pTask || pTask->scheduled)
         return false;
 
     pTask->periodic = true;
     pTask->period = period_ns;
+    _schedule(pTask, period_ns);
 
     return true;
 }
@@ -136,12 +148,13 @@ long int ts_run(void)
         task_sched.head = pTask->next;
 
         pTask->next = NULL;
+        pTask->prev = NULL;
         pTask->scheduled = false;
 
-        if(pTask->periodic)
-            ts_schedulePeriodic(pTask, pTask->period);
-
         pTask->cb(pTask->arg);
+
+        if(pTask->periodic)
+            _schedule(pTask, pTask->period);
     }
 
     return task_sched.head ? task_sched.head->ts - tsNow : 0;
