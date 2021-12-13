@@ -6,6 +6,8 @@
 
 #include "log.h"
 
+#include "mmu.h"
+
 #include <string.h>
 #include <stdbool.h>
 #include <assert.h>
@@ -44,6 +46,8 @@ static struct
     cpu_word lastSP[4];
 
     bool wait;
+
+    bool inTrap;
 } cpu;
 
 enum _opcode
@@ -193,11 +197,6 @@ struct _instruction
 
 static void _trap(cpu_word vec);
 
-static cpu_word _signExtend(cpu_word w, bool bByte)
-{
-    return bByte ? SIGN_EXTEND_BYTE(w) : w;
-}
-
 static bool _read(cpu_addr addr, bool bByte, cpu_space space, cpu_mode mode, cpu_word *data)
 {
     uint32_t w = mem_read(addr & ~1U, space, mode);
@@ -211,9 +210,12 @@ static bool _read(cpu_addr addr, bool bByte, cpu_space space, cpu_mode mode, cpu
     }
 
     if(bByte)
+    {
         w = w >> (8 * (addr & 1U)) & 0xFF;
-
-    *data = _signExtend(w, bByte);
+        *data = SIGN_EXTEND_BYTE(w);
+    }
+    else
+        *data = w;
 
     return true;
 }
@@ -679,7 +681,7 @@ static bool _makeOperandAddress(enum _addressingMode mode, int reg, bool bByte, 
     if(bByte)
         *pAddr |= OPERAND_TYPE_BYTE;
 
-    mem_updateMMR1(reg, nRnDiff);
+    mmu_updateMMR1(reg, nRnDiff);
 
     return true;
 }
@@ -691,7 +693,7 @@ static bool _load(enum _addressingMode mode, int reg, bool bByte, operand_addr* 
 
     if(*pAddr & OPERAND_TYPE_REG)
     {
-        *data = _signExtend(cpu.GPR[reg], bByte);
+        *data = bByte ? SIGN_EXTEND_BYTE(cpu.GPR[reg]) : cpu.GPR[reg];
         return true;
     }
 
@@ -740,33 +742,41 @@ static void _setPSW(cpu_word psw)
 
 static void _trap(cpu_word vec)
 {
+    if(cpu.inTrap)
+    {
+        DEBUG("TRAP IN TRAP %u @ 0%06o", vec, cpu.GPR[7]);
+        // TODO: Trap from trap
+        assert(false);
+    }
+
     DEBUG("TRAP %u @ 0%06o", vec, cpu.GPR[7]);
 
     // TODO: Debug
     //cpu.bDisassemblyOutput = true;
+    if(vec != 28 && vec != 144)
+    {
+        DEBUG("Looks like something went wrong...");
+    }
 
+    cpu.inTrap = true;
     cpu.wait = false;
 
     cpu_word newPC;
     cpu_word newPSW;
-    if(   !_read(vec, false, cpu_space_D, cpu_mode_Kernel, &newPC)
-       || !_read(vec + 2, false, cpu_space_D, cpu_mode_Kernel, &newPSW))
+    if(   _read(vec, false, cpu_space_D, cpu_mode_Kernel, &newPC)
+       && _read(vec + 2, false, cpu_space_D, cpu_mode_Kernel, &newPSW))
     {
-        // TODO: Trap from trap
-        assert(false);
+        cpu_word oldPSW = cpu.PSW;
+        cpu_word oldPC = cpu.GPR[7];
+
+        _setPSW(PSW_SET_PREV_MODE(newPSW, PSW_GET_CUR_MODE(oldPSW)));
+        cpu.GPR[7] = newPC;
+
+        if(_push(oldPSW))
+            _push(oldPC);
     }
 
-    cpu_word oldPSW = cpu.PSW;
-    cpu_word oldPC = cpu.GPR[7];
-
-    _setPSW(PSW_SET_PREV_MODE(newPSW, PSW_GET_CUR_MODE(cpu.PSW)));
-    cpu.GPR[7] = newPC;
-
-    if(!_push(oldPSW) || !_push(oldPC))
-    {
-        // TODO: Trap from trap
-        assert(false);
-    }
+    cpu.inTrap = false;
 }
 
 static void _initNameLUT(void)
@@ -1009,7 +1019,7 @@ bool cpu_run(void)
     // purpose register is either autoincremented or autodecremented, the
     // register number and the amount by which the register was modified
     // (in 2's complement notation) is written into MMR1.
-    mem_resetMMR1();
+    mmu_resetMMR1();
 
     // TODO: Update MMR2 on traps and interrupts also
     // MMR2 is loaded with the 16-bit Virtual Address (VA) at the beginning
@@ -1017,7 +1027,7 @@ bool cpu_run(void)
     // beginning of an interrupt, T Bit trap, Parity, Odd Address, and Timeout
     //aborts and parity traps. Note that MMR2 does not get the Trap Vector
     //on EMT, TRAP, BPT and lOT instructions.
-    mem_updateMMR2(cpu.GPR[7]);
+    mmu_updateMMR2(cpu.GPR[7]);
 
     cpu_word instWord;
     if(!_fetchPC(&instWord))
@@ -1524,7 +1534,7 @@ bool cpu_run(void)
         {
             if(PSW_GET_CUR_MODE(cpu.PSW) == CPU_MODE_KERNEL)
             {
-                mem_mmu_reset();
+                mmu_reset();
                 dev_reset();
             }
             break;

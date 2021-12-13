@@ -75,12 +75,4 @@ uint32_t mem_writeUnibus(un_addr addr, bool bByte, cpu_word data);
 uint32_t mem_read(cpu_addr addr, cpu_space s, cpu_mode m);
 uint32_t mem_write(cpu_addr addr, cpu_space s, cpu_mode m, bool bByte, cpu_word data);
 
-void mem_mmu_reset(void);
-// TODO: Set to false when in T bit, Parity, Odd Address, and Time Out traps and interrupts
-//  Note that EMT, TRAP, BPT, and lOT do not set this to true.
-void mem_updateMMR0(bool bInstCompleted);
-void mem_resetMMR1(void);
-void mem_updateMMR1(int reg, int diff);
-void mem_updateMMR2(cpu_word val);
-
 #endif //MEM_H_FA19B89AB9CD44F9B591AA96AC60CD93

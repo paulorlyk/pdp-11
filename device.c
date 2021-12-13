@@ -221,10 +221,12 @@ device_handle dev_getIRQ(int minPriority)
 
 cpu_word dev_ackIRQ(device_handle device)
 {
+    assert(device == devices.curDevIRQ);
+
     struct _device *pDev = (struct _device *)device;
 
-    if(!pDev || !pDev->irqACK)
-        return 0;
+    assert(pDev);
+    assert(pDev->irqACK);
 
     return pDev->irqACK(pDev->arg);
 }

@@ -62,8 +62,8 @@ void kbdTaskCb(void *arg)
 int main(void)
 {
     ts_init();
-    mem_init(bootstrapBase, (uint8_t *)bootstrap, sizeof(bootstrap));
     dev_init();
+    mem_init(bootstrapBase, (uint8_t *)bootstrap, sizeof(bootstrap));
 
     if(!kw11_init())
         return EXIT_FAILURE;

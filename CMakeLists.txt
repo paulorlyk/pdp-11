@@ -11,6 +11,8 @@ add_executable(pdp_11
         cpu.c
         mem.h
         mem.c
+        mmu.h
+        mmu.c
         log.h
         rk11.h
         rk11.c
