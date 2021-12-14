@@ -94,7 +94,7 @@ bool kw11_init(void)
         return false;
     }
 
-#if CONFIG_KW11_HZ
+#ifdef CONFIG_KW11_HZ
     if(!ts_schedulePeriodic(kw11.timerTask, (1.0 / CONFIG_KW11_HZ) * TS_SECONDS))
     {
         dev_destroyDevice(kw11.device);

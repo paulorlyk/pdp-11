@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/select.h>
 
 /*
 RK02/03/05 Disk Unit 0
@@ -41,22 +42,49 @@ cpu_addr bootstrapBase = 0001000;
 
 void terminalRx(char ch)
 {
+    ch = ch & 0x7F;
+
     putchar(ch);
     fflush(stdout);
+}
+
+bool hasInput(void)
+{
+    struct timeval tv = {0};
+
+    fd_set fds;
+    FD_ZERO(&fds);
+    FD_SET(STDIN_FILENO, &fds);
+
+    select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv);
+
+    return FD_ISSET(STDIN_FILENO, &fds);
 }
 
 void kbdTaskCb(void *arg)
 {
     DL11 dl11 = (DL11)arg;
 
-    static const char *msg = "unix\n";
-    static size_t pos = 0;
+    static const char msg[] = "unix\n";
+//    static const char msg[] = "";
+    static const size_t msgLen = sizeof(msg) - 1;
+    static size_t nProcessed = 0;
 
-    if(pos >= strlen(msg))
-        return;
+    char ch;
+    if(nProcessed >= msgLen)
+    {
+        if(!hasInput())
+            return;
 
-    if(dl11_rx(dl11, msg[pos]))
-        ++pos;
+        ssize_t res = read(STDIN_FILENO, &ch, sizeof(ch));
+        if(res <= 0)
+            return;
+    }
+    else
+        ch = msg[nProcessed];
+
+    if(dl11_rx(dl11, ch))
+        ++nProcessed;
 }
 
 int main(void)
@@ -85,15 +113,10 @@ int main(void)
     dev_registerDevice(cpu_getHandle());
 
     ts_handle kbdTask = ts_createTask(&kbdTaskCb, dl11);
+    ts_schedulePeriodic(kbdTask, 10 * TS_MILLISECONDS);
 
-    for(int i = 0;;)
+    for(;;)
     {
-        if(!ts_isScheduled(kbdTask) && (i++ > 100))
-        {
-            ts_schedule(kbdTask, 250 * TS_MILLISECONDS);
-            i = 0;
-        }
-
         long int nSleep = ts_run();
         if(!cpu_run())
         {

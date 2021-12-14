@@ -189,7 +189,7 @@ uint32_t mem_write(cpu_addr addr, cpu_space s, cpu_mode m, bool bByte, cpu_word 
 {
     ph_addr pa = mmu_map(addr, s, m, true);
     if(pa & MEM_HAS_ERR)
-        return false;
+        return pa;
 
     if(pa >= MEM_22BIT_UNIBUS_ADDR)
         return mem_writeUnibus(pa - MEM_22BIT_UNIBUS_ADDR, bByte, data);

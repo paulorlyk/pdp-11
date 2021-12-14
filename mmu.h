@@ -9,8 +9,6 @@
 
 void mmu_init(void);
 void mmu_reset(void);
-// TODO: Set to false when in T bit, Parity, Odd Address, and Time Out traps and interrupts
-//  Note that EMT, TRAP, BPT, and lOT do not set this to true.
 void mmu_updateMMR0(bool bInstCompleted);
 void mmu_resetMMR1(void);
 void mmu_updateMMR1(int reg, int diff);

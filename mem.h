@@ -53,6 +53,7 @@ typedef enum
 } cpu_mode;
 
 #define MEM_HAS_ERR         (1 << 31)
+#define MEM_ERR_MMU_ABORTED (1 << 30)
 #define MEM_ERR_ILL_HLT     (1 << 7)
 #define MEM_ERR_ODD_ADDR    (1 << 6)
 #define MEM_ERR_NX_MEM      (1 << 5)

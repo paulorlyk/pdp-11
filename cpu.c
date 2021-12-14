@@ -48,6 +48,8 @@ static struct
     bool wait;
 
     bool inTrap;
+
+    bool mmuTrap;
 } cpu;
 
 enum _opcode
@@ -205,7 +207,8 @@ static bool _read(cpu_addr addr, bool bByte, cpu_space space, cpu_mode mode, cpu
         DEBUG("CPU MEM READ ERROR: 0x%08x", w);
 
         // TODO: Update CPU Error Register
-        _trap(4);
+
+        _trap(w & MEM_ERR_MMU_ABORTED ? TRAP_MMU : TRAP_ERR);
         return false;
     }
 
@@ -231,7 +234,7 @@ static bool _write(cpu_addr addr, bool bByte, cpu_word data, cpu_space space, cp
         DEBUG("CPU MEM WRITE ERROR: 0x%08x", res);
 
         // TODO: Update CPU Error Register
-        _trap(4);
+        _trap(res & MEM_ERR_MMU_ABORTED ? TRAP_MMU : TRAP_ERR);
         return false;
     }
 
@@ -749,17 +752,17 @@ static void _trap(cpu_word vec)
         assert(false);
     }
 
-    DEBUG("TRAP %u @ 0%06o", vec, cpu.GPR[7]);
+    if(vec != 28 && vec != 144 && vec != 64 && vec != 48 && vec != 52)
+        DEBUG("TRAP %u @ 0%06o", vec, cpu.GPR[7]);
 
     // TODO: Debug
     //cpu.bDisassemblyOutput = true;
-    if(vec != 28 && vec != 144)
-    {
-        DEBUG("Looks like something went wrong...");
-    }
 
     cpu.inTrap = true;
     cpu.wait = false;
+
+    mmu_updateMMR0(false);
+    mmu_updateMMR2(vec);
 
     cpu_word newPC;
     cpu_word newPSW;
@@ -776,6 +779,7 @@ static void _trap(cpu_word vec)
             _push(oldPC);
     }
 
+    mmu_updateMMR0(true);
     cpu.inTrap = false;
 }
 
@@ -931,7 +935,7 @@ static void _cpuDeviceWrite(un_addr addr, cpu_word data, void* arg)
             break;
 
         case 0777570:   // Console Switch & Display Register
-            DEBUG("DISPLAY: 0x%04X", data);
+//            DEBUG("DISPLAY: 0x%04X", data);
             break;
 
 //        case 0777764:   // System I/D Register
@@ -958,6 +962,14 @@ bool cpu_init(cpu_word R7)
         return false;
 
     cpu.GPR[7] = R7;
+
+    // Indicates that the current instruction has been completed.
+    // It will be set to 0 during T bit, Parity, Odd Address, and Time Out traps and interrupts.
+    // This provides error handling routines with a way of determining whether
+    // the last instruction will have to be repeated in the course of an error
+    // recovery attempt. Bit 7 is read-only (it cannot be written). It is initialized to a 1.
+    // Note that EMT, TRAP, BPT, and lOT do not set bit 7.
+    mmu_updateMMR0(true);
 
     return true;
 }
@@ -999,18 +1011,23 @@ bool cpu_run(void)
 //        DEBUG("debug");
 //    }
 
-    // TODO: Check for pre-existing traps
-
-    device_handle hIRQDev = dev_getIRQ(PSW_GET_PRIORITY(cpu.PSW));
-    if(hIRQDev)
+    if(cpu.mmuTrap)
     {
-        cpu_word vec = dev_ackIRQ(hIRQDev);
-
-        DEBUG("Processing IRQ from device: %s, vector: 0%03o", dev_getName(hIRQDev), vec);
-
-        _trap(vec);
+        DEBUG("Processing MMU TRAP");
+        _trap(TRAP_MMU);
     }
-    else if(cpu.wait)
+    else
+    {
+        device_handle hIRQDev = dev_getIRQ(PSW_GET_PRIORITY(cpu.PSW));
+        if(hIRQDev)
+        {
+            cpu_word vec = dev_ackIRQ(hIRQDev);
+//            DEBUG("Processing IRQ from device: %s, vector: 0%03o", dev_getName(hIRQDev), vec);
+            _trap(vec);
+        }
+    }
+
+    if(cpu.wait)
         return false;
 
     // MMR1 records any auto increment/decrement of the general purpose
@@ -1021,12 +1038,11 @@ bool cpu_run(void)
     // (in 2's complement notation) is written into MMR1.
     mmu_resetMMR1();
 
-    // TODO: Update MMR2 on traps and interrupts also
     // MMR2 is loaded with the 16-bit Virtual Address (VA) at the beginning
     // of each instruction fetch, or with the address Trap Vector at the
     // beginning of an interrupt, T Bit trap, Parity, Odd Address, and Timeout
-    //aborts and parity traps. Note that MMR2 does not get the Trap Vector
-    //on EMT, TRAP, BPT and lOT instructions.
+    // aborts and parity traps. Note that MMR2 does not get the Trap Vector
+    // on EMT, TRAP, BPT and lOT instructions.
     mmu_updateMMR2(cpu.GPR[7]);
 
     cpu_word instWord;
@@ -1039,7 +1055,7 @@ bool cpu_run(void)
     if(!_decode(instWord, &inst))
     {
         DEBUG("UNKNOWN INSTRUCTION: 0%06o: 0%06o", cpu.GPR[7] - 2, instWord);
-        _trap(8);
+        _trap(TRAP_RESERVED_INSTRUCTION);
         return !cpu.wait;
     }
 
@@ -1583,13 +1599,13 @@ bool cpu_run(void)
 
         case _emt:
         {
-            _trap(24);
+            _trap(TRAP_EMT);
             break;
         }
 
         case _trap_op:
         {
-            _trap(28);
+            _trap(TRAP_TRAP);
             break;
         }
 
@@ -1600,4 +1616,9 @@ bool cpu_run(void)
     }
 
     return !cpu.wait;
+}
+
+void cpu_mmuTrap(void)
+{
+    cpu.mmuTrap = true;
 }

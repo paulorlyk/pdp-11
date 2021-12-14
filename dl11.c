@@ -47,7 +47,7 @@
 //#define DL11_RCSR_CLR_TO_SEND       (1 << 13)
 //#define DL11_RCSR_RING              (1 << 14)
 #define DL11_RCSR_DATASET_INT       (1 << 15)
-#define DL11_RCSR_WR_MASK           (DL11_RCSR_DTR | DL11_RCSR_REQ_TO_SEND | DL11_RCSR_SEC_XMIT | DL11_RCSR_DATASET_INT_ENB)
+#define DL11_RCSR_WR_MASK           (DL11_RCSR_DTR | DL11_RCSR_REQ_TO_SEND | DL11_RCSR_SEC_XMIT | DL11_RCSR_DATASET_INT_ENB | DL11_RCSR_RCVR_INT_ENB)
 
 // RBUF - Receiver Buffer Register
 // Bit      Designation
@@ -154,11 +154,14 @@ static cpu_word _read(un_addr addr, void* arg)
 
     int reg = (addr - pDev->baseAddr) >> 1;
 
+//    static const char *regNames[] = { "RCSR", "RBUF", "XCSR", "XBUF" };
+//    DEBUG("DL11: Reading %s", regNames[reg]);
+
     cpu_word res = pDev->regs[reg];
 
     if(reg == DL11_RCSR)
     {
-        // DL11_RCSR_DATASET_INT is read-onee bit so clear it
+        // DL11_RCSR_DATASET_INT is read-once bit so clear it
         // when register is read.
         pDev->regs[DL11_RCSR] &= ~DL11_RCSR_DATASET_INT;
         _updateInterrupts(pDev);
@@ -191,9 +194,8 @@ static void _write(un_addr addr, cpu_word data, void* arg)
             //DEBUG("DL11: Writing RCSR: 0%06o", data);
 
             assert(!(data & DL11_RCSR_DATASET_INT_ENB));
-            assert(!(data & DL11_RCSR_RCVR_INT_ENB));
 
-            pDev->regs[DL11_RCSR] = data & DL11_RCSR_WR_MASK;
+            pDev->regs[DL11_RCSR] = (pDev->regs[DL11_RCSR] & ~DL11_RCSR_WR_MASK) | (data & DL11_RCSR_WR_MASK);
 
             if(data & DL11_RCSR_RDR_ENB)
                 pDev->regs[DL11_RCSR] &= ~DL11_RCSR_RCVR_DONE;
@@ -213,9 +215,7 @@ static void _write(un_addr addr, cpu_word data, void* arg)
         case DL11_XCSR:
             //DEBUG("DL11: Writing XCSR: 0%06o", data);
 
-            assert(!(data & DL11_XCSR_XMIT_INT_ENB));
-
-            pDev->regs[DL11_XCSR] = data & DL11_XCSR_WR_MASK;
+            pDev->regs[DL11_XCSR] = (pDev->regs[DL11_XCSR] & ~DL11_XCSR_WR_MASK) | (data & DL11_XCSR_WR_MASK);
 
             if(data & DL11_XCSR_MAINT)
                 ts_cancel(pDev->rxTask);
@@ -236,13 +236,19 @@ static cpu_word _irqACK(void* arg)
     assert(arg);
     struct _dl11 *pDev = (struct _dl11 *)arg;
 
-    // TODO: Implement
-    assert(false);
+    dev_clearIRQ(pDev->device);
 
     // pDev->baseVector - RX,  higher priority than TX
     // pDev->baseVector + 4 - TX
 
-    return pDev->baseVector;
+    if(pDev->regs[DL11_RCSR] & (DL11_RCSR_DATASET_INT | DL11_RCSR_RCVR_DONE))
+        return pDev->baseVector;
+
+    if(pDev->regs[DL11_XCSR] & DL11_XCSR_XMIT_RDY)
+        return pDev->baseVector + 4;
+
+    // Should not be here
+    assert(false);
 }
 
 static void _devReset(void* arg)

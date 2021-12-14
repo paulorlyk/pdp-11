@@ -402,8 +402,8 @@ static void _diskTaskCb(void *arg)
                 assert(false);
             }
 
-            DEBUG("RK11: Writing %lu words to disk %d, cyl %d surf %d sect %d [img 0x%lX] from memory location 0%06o",
-                  nWordsCount, rk11.currentDrive, disk->nCylinder, disk->nSurface, disk->nSector, nDiskWord * 2, addr);
+//            DEBUG("RK11: Writing %lu words to disk %d, cyl %d surf %d sect %d [img 0x%lX] from memory location 0%06o",
+//                  nWordsCount, rk11.currentDrive, disk->nCylinder, disk->nSurface, disk->nSector, nDiskWord * 2, addr);
 //            DEBUG("RK11: Writing %lu words to disk [img 0x%06lX] from memory location 0%06o", nWordsCount, nDiskWord * 2, addr);
 
             for(nWordsDone = 0; nWordsDone < nWordsCount; ++nWordsDone)
@@ -435,8 +435,8 @@ static void _diskTaskCb(void *arg)
                 assert(false);
             }
 
-            DEBUG("RK11: Reading %lu words from disk %d, cyl %d surf %d sect %d [img 0x%lX] to memory location 0%06o",
-                  nWordsCount, rk11.currentDrive, disk->nCylinder, disk->nSurface, disk->nSector, nDiskWord * 2, addr);
+//            DEBUG("RK11: Reading %lu words from disk %d, cyl %d surf %d sect %d [img 0x%lX] to memory location 0%06o",
+//                  nWordsCount, rk11.currentDrive, disk->nCylinder, disk->nSurface, disk->nSector, nDiskWord * 2, addr);
 //            DEBUG("RK11: Reading %lu words from disk [img 0x%06lX] to memory location 0%06o", nWordsCount, nDiskWord * 2, addr);
 
             for(nWordsDone = 0; nWordsDone < nWordsCount; ++nWordsDone)

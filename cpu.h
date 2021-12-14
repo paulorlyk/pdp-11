@@ -79,7 +79,13 @@
 #define PSW_GET_C(psw) GET_BIT_FIELD((psw), PSW_C_MASK, PSW_C_OFFSET)
 #define PSW_SET_C(psw, val) SET_BIT_FIELD((psw), (val), PSW_C_MASK, PSW_C_OFFSET)
 
-#define PSW_MASK 0xF8FF;
+#define PSW_MASK 0xF8FF
+
+#define TRAP_ERR                    04
+#define TRAP_RESERVED_INSTRUCTION   010
+#define TRAP_EMT                    030
+#define TRAP_TRAP                   034
+#define TRAP_MMU                    0250
 
 bool cpu_init(cpu_word R7);
 
@@ -88,5 +94,7 @@ void cpu_destroy(void);
 device_handle cpu_getHandle(void);
 
 bool cpu_run(void);
+
+void cpu_mmuTrap(void);
 
 #endif //CPU_H_63FF543D3CE340CEA2683539FDDB2A0E
